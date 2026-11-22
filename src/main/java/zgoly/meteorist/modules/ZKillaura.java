@@ -27,6 +27,7 @@ import zgoly.meteorist.Meteorist;
 import zgoly.meteorist.utils.MeteoristUtils;
 
 import java.util.Set;
+import java.util.UUID;
 
 public class ZKillaura extends Module {
     private final SettingGroup sgFilter = settings.createGroup("Filter");
@@ -131,7 +132,7 @@ public class ZKillaura extends Module {
             .name("swing-hand").description("Makes hand swing visible client-side.").defaultValue(true).build()
     );
 
-    // НОВЫЕ НАСТРОЙКИ (В GUI)
+    // --- НОВЫЕ НАСТРОЙКИ ДЛЯ ОБХОДА АНТИЧИТОВ ---
     private final Setting<Boolean> onlySword = sgFilter.add(new BoolSetting.Builder()
             .name("only-sword").description("Attack only when holding a sword.").defaultValue(false).build()
     );
@@ -150,12 +151,18 @@ public class ZKillaura extends Module {
     private final Setting<Double> hitDelayRandomness = sgAttack.add(new DoubleSetting.Builder()
             .name("hit-delay-randomness").description("Random extra delay (in ticks) between attacks.").defaultValue(0.0).min(0.0).sliderMax(5.0).build()
     );
+    private final Setting<Double> firstHitDelay = sgAttack.add(new DoubleSetting.Builder()
+            .name("first-hit-delay").description("Задержка перед первым ударом по новой цели (в тиках).").defaultValue(2.5).min(0.0).sliderMax(8.0).build()
+    );
 
     public enum CriticalMode { None, Smart }
 
     float randomOnFallFloat = 0;
     float randomHitSpeedFloat = 0;
     private int randomDelayTicks = 0;
+
+    private UUID lastKillauraTarget = null;
+    private int killauraTargetTicks = 0;
 
     private ShieldState shieldState = ShieldState.Idle;
     private int swapTimer = 0, hitTimer = 0, swapBackTimer = 0;
@@ -173,6 +180,8 @@ public class ZKillaura extends Module {
         shieldState = ShieldState.Idle;
         swapTimer = hitTimer = swapBackTimer = 0;
         originalSlot = -1;
+        lastKillauraTarget = null;
+        killauraTargetTicks = 0;
     }
 
     @EventHandler
@@ -182,14 +191,27 @@ public class ZKillaura extends Module {
         if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
 
         HitResult hitResult = MeteoristUtils.getCrosshairTarget(mc.player, range.get(), ignoreWalls.get(), this::entityCheck);
-        if (hitResult == null || hitResult.getType() != HitResult.Type.ENTITY) return;
+        if (hitResult == null || hitResult.getType() != HitResult.Type.ENTITY) {
+            killauraTargetTicks = 0;
+            lastKillauraTarget = null;
+            return;
+        }
 
         Entity entity = ((EntityHitResult) hitResult).getEntity();
         LivingEntity livingEntity = (LivingEntity) entity;
 
+        // --- ОБХОД SHARD: Задержка перед первым ударом по новой цели ---
+        if (!entity.getUuid().equals(lastKillauraTarget)) {
+            lastKillauraTarget = entity.getUuid();
+            killauraTargetTicks = 0;
+        }
+        killauraTargetTicks++;
+        if (killauraTargetTicks < firstHitDelay.get().intValue()) return;
+
         if (mc.player.distanceTo(entity) > attackRange.get()) return;
         if (!throughWalls.get() && !mc.player.canSee(entity)) return;
 
+        // ... (логика щита без изменений) ...
         if (shieldMode.get() == ShieldMode.Break) {
             if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
                 FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
@@ -233,25 +255,29 @@ public class ZKillaura extends Module {
             if (shieldState == ShieldState.Attack || shieldState == ShieldState.SwapBack) return;
         }
 
+        // --- ИСПРАВЛЕННЫЕ СМАРТ-КРИТЫ ---
         if (criticalMode.get() == CriticalMode.Smart) {
-            if (mc.player.fallDistance <= 0 && mc.player.isOnGround()) return; 
+            // 1. Стоим на земле — не бьём (защита от CriticalsA)
+            if (mc.player.isOnGround() && mc.player.fallDistance <= 0) return;
+            // 2. Только оттолкнулись (ещё не начали падать) — ждём
+            if (!mc.player.isOnGround() && mc.player.fallDistance <= 0) return;
+            // 3. Падаем, но кулдаун атаки ещё не готов (ждём ~70% для гарантии серверного крита)
+            if (mc.player.getAttackCooldownProgress(0.5f) < 0.7f) return;
+        } else if (onFallMode.get() != OnFallMode.None) {
+            float onFall = onFallMode.get() == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
+            if (!(mc.player.fallDistance > onFall)) return;
         }
 
         float yawToTarget = (float) Math.toDegrees(Math.atan2(livingEntity.getZ() - mc.player.getZ(), livingEntity.getX() - mc.player.getX())) - 90f;
         float yawDiff = Math.abs(MathHelper.wrapDegrees(mc.player.getYaw() - yawToTarget));
         if (yawDiff > rotationSpeedLimit.get()) return;
 
+        // --- ОБХОД POLAR: Рандомизация интервала атак (KillAuraJ/K) ---
         if (hitDelayRandomness.get() > 0) {
             if (randomDelayTicks > 0) {
                 randomDelayTicks--;
                 return;
             }
-        }
-
-        OnFallMode currOnFallMode = onFallMode.get();
-        if (currOnFallMode != OnFallMode.None) {
-            float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
-            if (!(mc.player.fallDistance > onFall)) return;
         }
 
         HitSpeedMode currHitSpeedMode = hitSpeedMode.get();
