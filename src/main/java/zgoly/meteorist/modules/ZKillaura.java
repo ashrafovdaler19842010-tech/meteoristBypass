@@ -30,6 +30,14 @@ import java.util.Set;
 import java.util.UUID;
 
 public class ZKillaura extends Module {
+    public enum CriticalMode { None, Smart }
+    public enum AutoConfig { None, Polar, Shard }
+    public enum OnFallMode { None, Value, RandomValue }
+    public enum HitSpeedMode { None, Value, RandomValue }
+    public enum ShieldMode { Ignore, Break, None }
+    public enum DelayMode { Value, RandomValue }
+    private enum ShieldState { Idle, SwapAxe, Attack, SwapBack }
+
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAttack = settings.createGroup("Attack");
     private final SettingGroup sgShield = settings.createGroup("Shield");
@@ -136,7 +144,7 @@ public class ZKillaura extends Module {
             .name("only-sword").description("Attack only when holding a sword.").defaultValue(false).build()
     );
     private final Setting<CriticalMode> criticalMode = sgAttack.add(new EnumSetting.Builder<CriticalMode>()
-            .name("critical-mode").description("Smart = приоритет критов при прыжке, но бьет без прыжка если цель далеко.").defaultValue(CriticalMode.Smart).build()
+            .name("critical-mode").description("Smart = приоритет критов, но бьет без прыжка если цель далеко.").defaultValue(CriticalMode.Smart).build()
     );
     private final Setting<Double> rotationSpeedLimit = sgAttack.add(new DoubleSetting.Builder()
             .name("rotation-speed-limit").description("Max degrees you can be off-target to hit.").defaultValue(75.0).min(10.0).sliderMax(360.0).build()
@@ -167,14 +175,6 @@ public class ZKillaura extends Module {
     private final Setting<AutoConfig> autoConfigMode = sgAttack.add(new EnumSetting.Builder<AutoConfig>()
             .name("auto-config").description("Автоматически подбирает настройки под античит.").defaultValue(AutoConfig.None).build()
     );
-
-    public enum CriticalMode { None, Smart }
-    public enum AutoConfig { None, Polar, Shard }
-    public enum OnFallMode { None, Value, RandomValue }
-    public enum HitSpeedMode { None, Value, RandomValue }
-    public enum ShieldMode { Ignore, Break, None }
-    public enum DelayMode { Value, RandomValue }
-    private enum ShieldState { Idle, SwapAxe, Attack, SwapBack }
 
     float randomOnFallFloat = 0;
     float randomHitSpeedFloat = 0;
@@ -269,7 +269,6 @@ public class ZKillaura extends Module {
             if (shieldState == ShieldState.Attack) {
                 if (hitTimer-- > 0) break attackState;
                 if (livingEntity.isBlocking()) {
-                    // W-TAP перед ударом
                     if (wTap.get() && mc.player.isSprinting()) {
                         sprintState = true;
                         mc.options.sprintKey.setPressed(false);
