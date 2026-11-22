@@ -21,8 +21,10 @@ import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d; // НОВЫЙ ИМПОРТ
 import zgoly.meteorist.Meteorist;
 
+import java.util.Random; // НОВЫЙ ИМПОРТ
 import java.util.Set;
 
 import static zgoly.meteorist.utils.MeteoristUtils.calculateFov;
@@ -31,6 +33,7 @@ public class ZAimbot extends Module {
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAim = settings.createGroup("Aim");
 
+    // ... ВАШИ СТАРЫЕ НАСТРОЙКИ ФИЛЬТРА ...
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities")
             .description("Entities to aim at.")
@@ -115,6 +118,7 @@ public class ZAimbot extends Module {
             .build()
     );
 
+    // ... ВАШИ СТАРЫЕ НАСТРОЙКИ АИМА ...
     public final Setting<Double> targetMovementPrediction = sgAim.add(new DoubleSetting.Builder()
             .name("target-movement-prediction")
             .description("Amount to predict the target's movement when aiming.")
@@ -152,6 +156,86 @@ public class ZAimbot extends Module {
             .build()
     );
 
+    // ==========================================
+    // НОВЫЕ НАСТРОЙКИ (ДОБАВЛЕНЫ В GUI)
+    // ==========================================
+    private final Setting<Boolean> smoothAim = sgAim.add(new BoolSetting.Builder()
+            .name("smooth-aim")
+            .description("Enables smooth aiming.")
+            .defaultValue(false)
+            .build()
+    );
+    private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
+            .name("aim-speed")
+            .description("Speed of smooth aim.")
+            .defaultValue(1.0)
+            .min(0.1)
+            .sliderMax(10.0)
+            .visible(smoothAim::get)
+            .build()
+    );
+    private final Setting<Double> shakeIntensity = sgAim.add(new DoubleSetting.Builder()
+            .name("shake-intensity")
+            .description("How much the aim shakes.")
+            .defaultValue(0.0)
+            .min(0.0)
+            .sliderMax(1.0)
+            .build()
+    );
+    private final Setting<Double> shakeSpeed = sgAim.add(new DoubleSetting.Builder()
+            .name("shake-speed")
+            .description("Speed of the shake.")
+            .defaultValue(1.0)
+            .min(0.1)
+            .sliderMax(5.0)
+            .visible(() -> shakeIntensity.get() > 0)
+            .build()
+    );
+    private final Setting<Double> randomPointRadius = sgAim.add(new DoubleSetting.Builder()
+            .name("random-point-radius")
+            .description("Aim at a random point within this radius.")
+            .defaultValue(0.0)
+            .min(0.0)
+            .sliderMax(0.5)
+            .build()
+    );
+    private final Setting<Boolean> prioritizeCenter = sgAim.add(new BoolSetting.Builder()
+            .name("prioritize-center")
+            .description("Bias random point toward the center.")
+            .defaultValue(true)
+            .visible(() -> randomPointRadius.get() > 0)
+            .build()
+    );
+    private final Setting<Double> aimJitterAmplitude = sgAim.add(new DoubleSetting.Builder()
+            .name("aim-jitter-amplitude")
+            .description("How far the aim jitters.")
+            .defaultValue(0.0)
+            .min(0.0)
+            .sliderMax(0.2)
+            .build()
+    );
+    private final Setting<Double> aimJitterFrequency = sgAim.add(new DoubleSetting.Builder()
+            .name("aim-jitter-frequency")
+            .description("How often the jitter occurs.")
+            .defaultValue(1.0)
+            .min(0.1)
+            .sliderMax(10.0)
+            .visible(() -> aimJitterAmplitude.get() > 0)
+            .build()
+    );
+    private final Setting<Double> reactionTime = sgAim.add(new DoubleSetting.Builder()
+            .name("reaction-time")
+            .description("Delay (in ticks) before aiming at a new target.")
+            .defaultValue(0.0)
+            .min(0.0)
+            .sliderMax(10.0)
+            .build()
+    );
+
+    private final Random random = new Random();
+    private double shakePhase = 0;
+    private int reactionTimer = 0;
+
     public ZAimbot() {
         super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot that takes many settings into account when targeting.");
     }
@@ -162,49 +246,49 @@ public class ZAimbot extends Module {
 
         Entity target = TargetUtils.get(this::entityCheck, priority.get());
 
-        if (target == null) return;
+        if (target == null) {
+            reactionTimer = 0;
+            return;
+        }
+
+        // НОВАЯ ФУНКЦИЯ: Время реакции
+        if (reactionTime.get() > 0) {
+            if (reactionTimer < reactionTime.get().intValue()) {
+                reactionTimer++;
+                return;
+            }
+        } else {
+            reactionTimer = 0;
+        }
+
         aim(mc.player, target);
     }
 
     private boolean entityCheck(Entity entity) {
         if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
         if ((entity instanceof LivingEntity livingEntity && livingEntity.isDead()) || !entity.isAlive()) return false;
-
         if (!PlayerUtils.isWithin(entity, range.get())) return false;
-
         if (!entities.get().contains(entity.getType())) return false;
         if (ignoreNamed.get() && entity.hasCustomName()) return false;
 
         if (ignoreTamed.get()) {
-            if (entity instanceof Tameable tameable
-                    && tameable.getOwner() != null
-                    && tameable.getOwner().equals(mc.player)) {
+            if (entity instanceof Tameable tameable && tameable.getOwner() != null && tameable.getOwner().equals(mc.player)) {
                 return false;
             }
         }
-
         if (ignorePassive.get()) {
             switch (entity) {
-                case EndermanEntity enderman when !enderman.isAngry() -> {
-                    return false;
-                }
-                case ZombifiedPiglinEntity piglin when !piglin.isAttacking() -> {
-                    return false;
-                }
-                case WolfEntity wolf when !wolf.isAttacking() -> {
-                    return false;
-                }
-                default -> {
-                }
+                case EndermanEntity enderman when !enderman.isAngry() -> { return false; }
+                case ZombifiedPiglinEntity piglin when !piglin.isAttacking() -> { return false; }
+                case WolfEntity wolf when !wolf.isAttacking() -> { return false; }
+                default -> {}
             }
         }
-
         if (entity instanceof PlayerEntity player) {
             if (ignoreCreative.get() && player.isCreative()) return false;
             if (ignoreFriends.get() && !Friends.get().shouldAttack(player)) return false;
             if (ignoreShield.get() && player.isBlocking()) return false;
         }
-
         if (entity instanceof AnimalEntity animal) {
             return switch (mobAgeFilter.get()) {
                 case Baby -> animal.isBaby();
@@ -212,22 +296,56 @@ public class ZAimbot extends Module {
                 case Both -> true;
             };
         }
-
         if (useFovRange.get() && calculateFov(mc.player, entity) > fovRange.get()) return false;
         return ignoreWalls.get() || PlayerUtils.canSeeEntity(entity);
     }
 
     private void aim(LivingEntity player, Entity target) {
-        float targetYaw = (float) Rotations.getYaw(target.getPos().add(target.getVelocity().multiply(targetMovementPrediction.get())));
+        // СТАРАЯ ЛОГИКА (но с добавлением новой точки прицеливания)
+        Vec3d aimPos = target.getPos().add(target.getVelocity().multiply(targetMovementPrediction.get()));
+        
+        // НОВАЯ ФУНКЦИЯ: Рандомная точка
+        if (randomPointRadius.get() > 0) {
+            Vec3d center = target.getPos().add(0, target.getHeight() / 2, 0);
+            Vec3d offset = new Vec3d(
+                    (random.nextDouble() - 0.5) * 2 * randomPointRadius.get(),
+                    (random.nextDouble() - 0.5) * 2 * randomPointRadius.get(),
+                    (random.nextDouble() - 0.5) * 2 * randomPointRadius.get()
+            );
+            if (prioritizeCenter.get()) offset = offset.multiply(0.5);
+            aimPos = center.add(offset);
+        }
+
+        float targetYaw = (float) Rotations.getYaw(aimPos);
         float targetPitch = (float) Rotations.getPitch(target, bodyTarget.get());
+
+        // НОВАЯ ФУНКЦИЯ: Дрожание (Shake)
+        if (shakeIntensity.get() > 0) {
+            shakePhase += shakeSpeed.get() * 0.1;
+            if (shakePhase > Math.PI * 2) shakePhase -= Math.PI * 2;
+            targetYaw += (float) (Math.sin(shakePhase) * shakeIntensity.get());
+            targetPitch += (float) (Math.cos(shakePhase * 1.3) * shakeIntensity.get());
+        }
+
+        // НОВАЯ ФУНКЦИЯ: Джиттер (Jitter)
+        if (aimJitterAmplitude.get() > 0) {
+            targetYaw += (float) ((random.nextDouble() - 0.5) * 2 * aimJitterAmplitude.get());
+            targetPitch += (float) ((random.nextDouble() - 0.5) * 2 * aimJitterAmplitude.get());
+        }
 
         float yawDifference = MathHelper.wrapDegrees(targetYaw - player.getYaw());
         float pitchDifference = MathHelper.wrapDegrees(targetPitch - player.getPitch());
 
+        // СТАРАЯ ЛОГИКА АИМА (с добавлением Smooth Aim)
         if (instantAim.get()) {
             player.setYaw(targetYaw);
             player.setPitch(targetPitch);
+        } else if (smoothAim.get()) { // НОВАЯ ФУНКЦИЯ
+            float cooldownProgress = syncSpeedWithCooldown.get() ? mc.player.getAttackCooldownProgress(0) : 1;
+            player.setYaw(player.getYaw() + yawDifference * cooldownProgress * aimSpeed.get().floatValue() / 10);
+            player.setPitch(player.getPitch() + pitchDifference * cooldownProgress * aimSpeed.get().floatValue() / 10);
         } else {
+            // ВАШ СТАРЫЙ КОД
             float cooldownProgress = syncSpeedWithCooldown.get() ? mc.player.getAttackCooldownProgress(0) : 1;
             player.setYaw(player.getYaw() + yawDifference * cooldownProgress * speed.get().floatValue() / 10);
             player.setPitch(player.getPitch() + pitchDifference * cooldownProgress * speed.get().floatValue() / 10);
