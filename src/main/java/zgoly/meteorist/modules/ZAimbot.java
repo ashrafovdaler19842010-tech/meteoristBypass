@@ -78,32 +78,34 @@ public class ZAimbot extends Module {
             .name("priority").description("Sorting method to prioritize targets within range.").defaultValue(SortPriority.ClosestAngle).build()
     );
 
-    // --- AIM ---
-    private final Setting<Boolean> smoothAim = sgAim.add(new BoolSetting.Builder()
-            .name("smooth-aim").description("Enables smooth aiming.").defaultValue(true).build()
-    );
+    // --- AIM BASE ---
     private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
-            .name("aim-speed").description("Speed of smooth aim.").defaultValue(2.0).min(0.1).sliderMax(10.0).visible(smoothAim::get).build()
+            .name("aim-speed").description("Base speed of aim.").defaultValue(2.0).min(0.1).sliderMax(10.0).build()
     );
     private final Setting<Double> maxRotationPerTick = sgAim.add(new DoubleSetting.Builder()
-            .name("max-rotation-per-tick").description("Максимальный поворот за тик в градусах (обходит AimM/AimP).").defaultValue(35.0).min(5.0).sliderMax(180.0).build()
+            .name("max-rotation-per-tick").description("Максимальный поворот за тик в градусах.").defaultValue(35.0).min(5.0).sliderMax(180.0).build()
     );
     private final Setting<Boolean> gcdFix = sgAim.add(new BoolSetting.Builder()
-            .name("gcd-fix").description("Нормализует углы под GCD мыши (обходит Polar AimQ/AimU).").defaultValue(true).build()
+            .name("gcd-fix").description("Нормализует углы под GCD мыши.").defaultValue(true).build()
     );
     private final Setting<Double> reactionTime = sgAim.add(new DoubleSetting.Builder()
             .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
     );
 
-    // --- HUMANIZATION / SACCADIC ---
-    private final Setting<Boolean> saccadicFix = sgAim.add(new BoolSetting.Builder()
-            .name("saccadic-fix").description("Добавляет саккадические движения (кривые Безье) для обхода Shard AI.").defaultValue(true).build()
+    // --- THREE ROTATION MODES ---
+    private final Setting<Boolean> smoothRotation = sgAim.add(new BoolSetting.Builder()
+            .name("smooth-rotation (Legit)").description("Классическая плавная наводка без шума.").defaultValue(true).build()
     );
-    private final Setting<Double> saccadicOvershoot = sgAim.add(new DoubleSetting.Builder()
-            .name("saccadic-overshoot").description("Насколько сильно прицел перелетает цель (1.0 - 1.3).").defaultValue(1.15).min(1.0).sliderMax(1.4).visible(saccadicFix::get).build()
+    private final Setting<Boolean> neuroRotation = sgAim.add(new BoolSetting.Builder()
+            .name("neuro-rotation (Shard)").description("Шум Орнштейна-Уленбека + случайные паузы. Рекомендуется для Shard AC.").defaultValue(false).build()
     );
+    private final Setting<Boolean> ouNoiseRotation = sgAim.add(new BoolSetting.Builder()
+            .name("ou-noise-rotation (Advanced)").description("Агрессивный коррелированный шум с имитацией задержки ввода.").defaultValue(false).build()
+    );
+
+    // --- HUMANIZATION ---
     private final Setting<Double> microJitter = sgAim.add(new DoubleSetting.Builder()
-            .name("micro-jitter").description("Микро-дрожание руки.").defaultValue(0.04).min(0.0).sliderMax(0.2).build()
+            .name("micro-jitter").description("Микро-дрожание руки (базовое).").defaultValue(0.04).min(0.0).sliderMax(0.2).build()
     );
 
     // --- TARGET LOCK & POINT ---
@@ -117,7 +119,6 @@ public class ZAimbot extends Module {
             .name("slow-down-in-hitbox").description("Замедляет наводку, когда прицел уже внутри хитбокса.").defaultValue(true).build()
     );
 
-    // --- AUTO CONFIG ---
     private final Setting<AutoConfig> autoConfigMode = sgAim.add(new EnumSetting.Builder<AutoConfig>()
             .name("auto-config").description("Автоматически подбирает настройки под античит.").defaultValue(AutoConfig.None).build()
     );
@@ -127,14 +128,15 @@ public class ZAimbot extends Module {
     private LivingEntity lockedTarget = null;
     private long lockStartTime = 0;
     private Vec3d currentAimPoint = null;
-    
-    // Переменные для саккадической наводки
-    private float saccadeProgress = 0.0f;
-    private float saccadeStartYaw = 0.0f;
-    private float saccadeStartPitch = 0.0f;
+
+    // Состояние для шума Орнштейна-Уленбека (OU)
+    private float ouYaw = 0.0f;
+    private float ouPitch = 0.0f;
+    private long lastNoiseUpdate = 0;
+    private long nextMicroPause = 0;
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with saccadic movement and AC bypass.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with three rotation modes for AC bypass.");
     }
 
     @Override
@@ -142,7 +144,8 @@ public class ZAimbot extends Module {
         reactionTimer = 0;
         lockedTarget = null;
         currentAimPoint = null;
-        saccadeProgress = 0.0f;
+        ouYaw = 0.0f;
+        ouPitch = 0.0f;
         applyAutoConfig();
     }
 
@@ -170,9 +173,8 @@ public class ZAimbot extends Module {
                 lockStartTime = currentTime;
                 currentAimPoint = null;
                 reactionTimer = 0;
-                saccadeProgress = 0.0f;
-                saccadeStartYaw = mc.player.getYaw();
-                saccadeStartPitch = mc.player.getPitch();
+                ouYaw = 0.0f;
+                ouPitch = 0.0f;
             }
         }
 
@@ -205,59 +207,6 @@ public class ZAimbot extends Module {
         float targetYaw = (float) Rotations.getYaw(currentAimPoint);
         float targetPitch = (float) Rotations.getPitch(currentAimPoint);
 
-        // --- ЛОГИКА САККАДИЧЕСКОГО ДВИЖЕНИЯ (SHARD BYPASS) ---
-        if (saccadicFix.get()) {
-            saccadeProgress += 0.15f + (random.nextFloat() * 0.1f); // Скорость прогресса
-            if (saccadeProgress > 1.0f) saccadeProgress = 1.0f;
-
-            // Кубическая кривая Безье: от стартовой точки через "перелет" к цели
-            float p0Yaw = saccadeStartYaw;
-            float p0Pitch = saccadeStartPitch;
-            
-            float deltaYaw = MathHelper.wrapDegrees(targetYaw - p0Yaw);
-            float deltaPitch = MathHelper.wrapDegrees(targetPitch - p0Pitch);
-
-            // Точка перерегулирования (overshoot) - пролетаем чуть дальше цели
-            float overshoot = (float) (saccadicOvershoot.get() + (random.nextFloat() - 0.5) * 0.1);
-            float p1Yaw = p0Yaw + deltaYaw * overshoot;
-            float p1Pitch = p0Pitch + deltaPitch * overshoot;
-
-            // Точка возврата (чуть ближе к цели)
-            float p2Yaw = targetYaw - deltaYaw * 0.05f;
-            float p2Pitch = targetPitch - deltaPitch * 0.05f;
-            
-            float p3Yaw = targetYaw;
-            float p3Pitch = targetPitch;
-
-            // Формула Безье
-            float t = saccadeProgress;
-            float u = 1 - t;
-            float tt = t * t;
-            float uu = u * u;
-            float uuu = uu * u;
-            float ttt = tt * t;
-
-            float calcYaw = uuu * p0Yaw + 3 * uu * t * p1Yaw + 3 * u * tt * p2Yaw + ttt * p3Yaw;
-            float calcPitch = uuu * p0Pitch + 3 * uu * t * p1Pitch + 3 * u * tt * p2Pitch + ttt * p3Pitch;
-
-            // Добавляем микро-тремор при завершении движения
-            if (t > 0.85f) {
-                calcYaw += (random.nextFloat() - 0.5f) * 0.5f;
-                calcPitch += (random.nextFloat() - 0.5f) * 0.5f;
-            }
-
-            player.setYaw(normalizeToGCD(calcYaw));
-            player.setPitch(MathHelper.clamp(normalizeToGCD(calcPitch), -90f, 90f));
-            
-            return; // Выходим, так как Безье полностью управляет углами
-        }
-
-        // --- СТАРАЯ ЛОГИКА (Плавная наводка / Smooth) ---
-        if (microJitter.get() > 0) {
-            targetYaw += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
-            targetPitch += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
-        }
-
         float yawDifference = MathHelper.wrapDegrees(targetYaw - player.getYaw());
         float pitchDifference = MathHelper.wrapDegrees(targetPitch - player.getPitch());
 
@@ -268,8 +217,7 @@ public class ZAimbot extends Module {
                     && ((EntityHitResult)mc.crosshairTarget).getEntity() == target;
         }
 
-        float speedFactor = smoothAim.get() ? aimSpeed.get().floatValue() / 10.0f : 0.5f;
-        
+        float speedFactor = aimSpeed.get().floatValue() / 10.0f;
         if (slowDownInHitbox.get() && lookingAtTarget) {
             speedFactor *= 0.3f; 
         }
@@ -281,17 +229,94 @@ public class ZAimbot extends Module {
         deltaYaw = MathHelper.clamp(deltaYaw, -maxRot, maxRot);
         deltaPitch = MathHelper.clamp(deltaPitch, -maxRot, maxRot);
 
+        // --- APPLY ROTATION MODES ---
+        if (neuroRotation.get()) {
+            applyNeuroNoise(player, deltaYaw, deltaPitch);
+            return;
+        } else if (ouNoiseRotation.get()) {
+            applyOuNoise(player, deltaYaw, deltaPitch);
+            return;
+        }
+
+        // --- DEFAULT SMOOTH (LEGIT) ---
+        if (microJitter.get() > 0) {
+            deltaYaw += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
+            deltaPitch += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
+        }
+
         if (gcdFix.get()) {
-            float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
-            float f = sensitivity * 0.6f + 0.2f;
-            float gcd = f * f * f * 1.2f; 
-            
-            deltaYaw = Math.round(deltaYaw / gcd) * gcd;
-            deltaPitch = Math.round(deltaPitch / gcd) * gcd;
+            deltaYaw = normalizeToGCD(deltaYaw);
+            deltaPitch = normalizeToGCD(deltaPitch);
         }
 
         player.setYaw(player.getYaw() + deltaYaw);
         player.setPitch(MathHelper.clamp(player.getPitch() + deltaPitch, -90f, 90f));
+    }
+
+    private void applyNeuroNoise(LivingEntity player, float baseDeltaYaw, float baseDeltaPitch) {
+        long now = System.currentTimeMillis();
+        
+        // "Дышащий" шум Орнштейна-Уленбека (медленно меняющийся)
+        if (now - lastNoiseUpdate > 20) { // обновляем каждые 20 мс
+            float theta = 0.15f; // скорость возврата к среднему
+            float sigma = 0.5f;  // волатильность
+            
+            ouYaw += theta * (0.0f - ouYaw) + sigma * (float) random.nextGaussian();
+            ouPitch += theta * (0.0f - ouPitch) + sigma * (float) random.nextGaussian();
+            lastNoiseUpdate = now;
+        }
+
+        // Случайные микро-паузы (имитация усталости/коррекции)
+        if (now > nextMicroPause) {
+            if (random.nextFloat() < 0.05f) { // 5% шанс паузы
+                nextMicroPause = now + 50 + random.nextInt(100); // пауза 50-150 мс
+                return; // Пропускаем кадр (рука "замерла")
+            }
+        } else {
+            return; // Мы на паузе
+        }
+
+        float finalYaw = baseDeltaYaw + ouYaw * 0.3f;
+        float finalPitch = baseDeltaPitch + ouPitch * 0.3f;
+
+        // Добавляем немного высокочастотного шума
+        finalYaw += (float) ((random.nextDouble() - 0.5) * 0.1);
+        finalPitch += (float) ((random.nextDouble() - 0.5) * 0.1);
+
+        if (gcdFix.get()) {
+            finalYaw = normalizeToGCD(finalYaw);
+            finalPitch = normalizeToGCD(finalPitch);
+        }
+
+        player.setYaw(player.getYaw() + finalYaw);
+        player.setPitch(MathHelper.clamp(player.getPitch() + finalPitch, -90f, 90f));
+    }
+
+    private void applyOuNoise(LivingEntity player, float baseDeltaYaw, float baseDeltaPitch) {
+        // Более агрессивный OU-шум с имитацией задержки ввода
+        long now = System.currentTimeMillis();
+        
+        float theta = 0.05f; // очень медленный возврат
+        float sigma = 0.8f;  // высокая волатильность
+        
+        ouYaw += theta * (0.0f - ouYaw) + sigma * (float) random.nextGaussian();
+        ouPitch += theta * (0.0f - ouPitch) + sigma * (float) random.nextGaussian();
+
+        // Задержка ввода (10-40 мс) - иногда пропускаем обновление
+        if (random.nextFloat() < 0.1f) { // 10% шанс "лага" ввода
+            return;
+        }
+
+        float finalYaw = baseDeltaYaw + ouYaw * 0.5f;
+        float finalPitch = baseDeltaPitch + ouPitch * 0.5f;
+
+        if (gcdFix.get()) {
+            finalYaw = normalizeToGCD(finalYaw);
+            finalPitch = normalizeToGCD(finalPitch);
+        }
+
+        player.setYaw(player.getYaw() + finalYaw);
+        player.setPitch(MathHelper.clamp(player.getPitch() + finalPitch, -90f, 90f));
     }
 
     private void applyAutoConfig() {
@@ -300,26 +325,21 @@ public class ZAimbot extends Module {
                 gcdFix.set(true);
                 maxRotationPerTick.set(30.0);
                 microJitter.set(0.03);
-                saccadicFix.set(false);
-                randomAimPoint.set(true);
-                slowDownInHitbox.set(true);
+                smoothRotation.set(true);
+                neuroRotation.set(false);
+                ouNoiseRotation.set(false);
                 reactionTime.set(2.0);
-                smoothAim.set(true);
                 aimSpeed.set(2.5);
-                targetLockTime.set(3.0);
             }
             case Shard -> {
                 gcdFix.set(true);
                 maxRotationPerTick.set(45.0);
                 microJitter.set(0.06);
-                saccadicFix.set(true); // Включаем Безье для Shard
-                saccadicOvershoot.set(1.2);
-                randomAimPoint.set(true);
-                slowDownInHitbox.set(true);
+                smoothRotation.set(false);
+                neuroRotation.set(true); // Включаем Neuro для Shard
+                ouNoiseRotation.set(false);
                 reactionTime.set(4.0);
-                smoothAim.set(true);
                 aimSpeed.set(2.0);
-                targetLockTime.set(4.0);
             }
             case None -> {}
         }
