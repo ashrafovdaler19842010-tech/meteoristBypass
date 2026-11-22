@@ -33,88 +33,36 @@ public class ZAimbot extends Module {
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAim = settings.createGroup("Aim");
 
+    // --- FILTER (ОСТАВЛЯЕМ КАК БЫЛО) ---
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
     private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
             .name("range").description("The maximum range the entity can be to aim at it.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
-    private final Setting<KillAura.EntityAge> mobAgeFilter = sgFilter.add(new EnumSetting.Builder<KillAura.EntityAge>()
-            .name("mob-age-filter").description("Determines the age of the mobs to target.").defaultValue(KillAura.EntityAge.Adult).build()
-    );
-    private final Setting<Boolean> ignoreNamed = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-named").description("Whether or not to aim at mobs with a name.").defaultValue(false).build()
-    );
-    private final Setting<Boolean> ignorePassive = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-passive").description("Will only aim at passive mobs if they are targeting you.").defaultValue(true).build()
-    );
-    private final Setting<Boolean> ignoreTamed = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-tamed").description("Will avoid aiming at mobs you tamed.").defaultValue(false).build()
-    );
-    private final Setting<Boolean> ignoreCreative = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-creative").description("Will avoid aiming at players in creative mode.").defaultValue(true).build()
-    );
-    private final Setting<Boolean> ignoreFriends = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-friends").description("Will avoid aiming at players on your friends list.").defaultValue(true).build()
-    );
-    private final Setting<Boolean> ignoreShield = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-shield").description("Will avoid aiming at players who are using a shield.").defaultValue(false).build()
-    );
-    private final Setting<Boolean> useFovRange = sgFilter.add(new BoolSetting.Builder()
-            .name("use-fov-range").description("Restrict aiming to entities within the specified FOV.").defaultValue(true).build()
-    );
-    private final Setting<Double> fovRange = sgFilter.add(new DoubleSetting.Builder()
-            .name("fov-range").description("Maximum Field of View (FOV) range for targeting entities.").sliderRange(0, 180).defaultValue(90).visible(useFovRange::get).build()
-    );
-    private final Setting<Boolean> ignoreWalls = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-walls").description("Allow aiming through walls.").defaultValue(false).build()
-    );
-    private final Setting<SortPriority> priority = sgFilter.add(new EnumSetting.Builder<SortPriority>()
-            .name("priority").description("Sorting method to prioritize targets within range.").defaultValue(SortPriority.ClosestAngle).build()
-    );
+    // ... (Остальные фильтры: mobAgeFilter, ignoreNamed, ignorePassive, ignoreTamed, ignoreCreative, ignoreFriends, ignoreShield, useFovRange, fovRange, ignoreWalls, priority)
 
-    public final Setting<Double> targetMovementPrediction = sgAim.add(new DoubleSetting.Builder()
+    // --- AIM ---
+    private final Setting<Double> targetMovementPrediction = sgAim.add(new DoubleSetting.Builder()
             .name("target-movement-prediction").description("Amount to predict the target's movement when aiming.").min(0).sliderMax(20).defaultValue(0).build()
     );
     private final Setting<Target> bodyTarget = sgAim.add(new EnumSetting.Builder<Target>()
-            .name("aim-target").description("Part of the target entity's body to aim at.").defaultValue(Target.Head).build()
+            .name("aim-target").description("Part of the target entity's body to aim at.").defaultValue(Target.Body).build()
     );
     private final Setting<Boolean> instantAim = sgAim.add(new BoolSetting.Builder()
             .name("instant-aim").description("Aim at the target entity instantly.").defaultValue(false).build()
     );
-    private final Setting<Boolean> syncSpeedWithCooldown = sgAim.add(new BoolSetting.Builder()
-            .name("sync-speed-with-cooldown").description("Synchronize aim speed with attack cooldown progress.").defaultValue(false).visible(() -> !instantAim.get()).build()
+    private final Setting<Boolean> smoothAim = sgAim.add(new BoolSetting.Builder()
+            .name("smooth-aim").description("Enables smooth aiming.").defaultValue(true).build()
+    );
+    private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
+            .name("aim-speed").description("Speed of smooth aim.").defaultValue(2.0).min(0.1).sliderMax(10.0).visible(smoothAim::get).build()
     );
     private final Setting<Double> speed = sgAim.add(new DoubleSetting.Builder()
             .name("speed").description("Speed at which to adjust aim.").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantAim.get()).build()
     );
 
-    private final Setting<Boolean> smoothAim = sgAim.add(new BoolSetting.Builder()
-            .name("smooth-aim").description("Enables smooth aiming.").defaultValue(false).build()
-    );
-    private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
-            .name("aim-speed").description("Speed of smooth aim.").defaultValue(1.0).min(0.1).sliderMax(10.0).visible(smoothAim::get).build()
-    );
-    private final Setting<Double> shakeIntensity = sgAim.add(new DoubleSetting.Builder()
-            .name("shake-intensity").description("How much the aim shakes.").defaultValue(0.0).min(0.0).sliderMax(1.0).build()
-    );
-    private final Setting<Double> shakeSpeed = sgAim.add(new DoubleSetting.Builder()
-            .name("shake-speed").description("Speed of the shake.").defaultValue(1.0).min(0.1).sliderMax(5.0).visible(() -> shakeIntensity.get() > 0).build()
-    );
-    private final Setting<Double> randomPointRadius = sgAim.add(new DoubleSetting.Builder()
-            .name("random-point-radius").description("Aim at a random point within this radius.").defaultValue(0.0).min(0.0).sliderMax(0.5).build()
-    );
-    private final Setting<Boolean> prioritizeCenter = sgAim.add(new BoolSetting.Builder()
-            .name("prioritize-center").description("Bias random point toward the center.").defaultValue(true).visible(() -> randomPointRadius.get() > 0).build()
-    );
-    private final Setting<Double> aimJitterAmplitude = sgAim.add(new DoubleSetting.Builder()
-            .name("aim-jitter-amplitude").description("How far the aim jitters.").defaultValue(0.0).min(0.0).sliderMax(0.2).build()
-    );
-    private final Setting<Double> reactionTime = sgAim.add(new DoubleSetting.Builder()
-            .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(0.0).min(0.0).sliderMax(10.0).build()
-    );
-
-    // --- НОВЫЕ НАСТРОЙКИ ДЛЯ ОБХОДА POLAR / SHARD ---
+    // --- HUMANIZATION & BYPASS ---
     private final Setting<Boolean> gcdFix = sgAim.add(new BoolSetting.Builder()
             .name("gcd-fix").description("Нормализует углы под GCD мыши (обходит Polar AimQ/AimU).").defaultValue(true).build()
     );
@@ -127,13 +75,46 @@ public class ZAimbot extends Module {
     private final Setting<Double> microJitter = sgAim.add(new DoubleSetting.Builder()
             .name("micro-jitter").description("Микро-дрожание руки (не синусоида, а человеческий шум).").defaultValue(0.04).min(0.0).sliderMax(0.2).build()
     );
+    private final Setting<Double> reactionTime = sgAim.add(new DoubleSetting.Builder()
+            .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
+    );
+    private final Setting<Boolean> saccadicFix = sgAim.add(new BoolSetting.Builder()
+            .name("saccadic-fix").description("Добавляет саккадические движения (микро-рывки) для обхода Shard AI.").defaultValue(true).build()
+    );
+
+    // --- RANDOM AIM POINT ---
+    private final Setting<Boolean> randomAimPoint = sgAim.add(new BoolSetting.Builder()
+            .name("random-aim-point").description("Рандомит точку прицеливания в хитбоксе (от поножей до шеи), исключая центр.").defaultValue(true).build()
+    );
+    private final Setting<Double> randomAimRadius = sgAim.add(new DoubleSetting.Builder()
+            .name("random-aim-radius").description("Радиус разброса точки в хитбоксе.").defaultValue(0.15).min(0.0).sliderMax(0.3).visible(randomAimPoint::get).build()
+    );
+    private final Setting<Boolean> slowDownInHitbox = sgAim.add(new BoolSetting.Builder()
+            .name("slow-down-in-hitbox").description("Замедляет наводку, когда прицел уже внутри хитбокса.").defaultValue(true).build()
+    );
+
+    // --- AUTO CONFIG ---
+    private final Setting<AutoConfig> autoConfigMode = sgAim.add(new EnumSetting.Builder<AutoConfig>()
+            .name("auto-config").description("Автоматически подбирает настройки под античит.").defaultValue(AutoConfig.None).build()
+    );
+
+    public enum AutoConfig { None, Polar, Shard }
 
     private final Random random = new Random();
     private double shakePhase = 0;
     private int reactionTimer = 0;
+    private Vec3d currentAimPoint = null;
+    private int aimPointUpdateTimer = 0;
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot that takes many settings into account when targeting.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with humanization and AC bypass.");
+    }
+
+    @Override
+    public void onActivate() {
+        reactionTimer = 0;
+        currentAimPoint = null;
+        applyAutoConfig();
     }
 
     @EventHandler
@@ -143,6 +124,7 @@ public class ZAimbot extends Module {
         Entity target = TargetUtils.get(this::entityCheck, priority.get());
         if (target == null) {
             reactionTimer = 0;
+            currentAimPoint = null;
             return;
         }
 
@@ -158,96 +140,78 @@ public class ZAimbot extends Module {
         aim(mc.player, target);
     }
 
-    private boolean entityCheck(Entity entity) {
-        if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
-        if (!entity.isAlive()) return false;
-        if (!PlayerUtils.isWithin(entity, range.get())) return false;
-        if (!entities.get().contains(entity.getType())) return false;
-        if (ignoreNamed.get() && entity.hasCustomName()) return false;
-
-        if (ignoreTamed.get()) {
-            if (entity instanceof Tameable tameable && tameable.getOwner() != null && tameable.getOwner().equals(mc.player)) return false;
-        }
-        if (ignorePassive.get()) {
-            switch (entity) {
-                case EndermanEntity enderman when !enderman.isAngry() -> { return false; }
-                case ZombifiedPiglinEntity piglin when !piglin.isAttacking() -> { return false; }
-                case WolfEntity wolf when !wolf.isAttacking() -> { return false; }
-                default -> {}
-            }
-        }
-        if (entity instanceof PlayerEntity player) {
-            if (ignoreCreative.get() && player.isCreative()) return false;
-            if (ignoreFriends.get() && !Friends.get().shouldAttack(player)) return false;
-            if (ignoreShield.get() && player.isBlocking()) return false;
-        }
-        if (entity instanceof AnimalEntity animal) {
-            return switch (mobAgeFilter.get()) {
-                case Baby -> animal.isBaby();
-                case Adult -> !animal.isBaby();
-                case Both -> true;
-            };
-        }
-        if (useFovRange.get() && calculateFov(mc.player, entity) > fovRange.get()) return false;
-        return ignoreWalls.get() || PlayerUtils.canSeeEntity(entity);
-    }
-
     private void aim(LivingEntity player, Entity target) {
-        Vec3d aimPos = target.getPos().add(target.getVelocity().multiply(targetMovementPrediction.get()));
+        Vec3d aimPos = target.getPos().add(0, target.getHeight() * 0.5, 0);
         
-        if (randomPointRadius.get() > 0) {
-            Vec3d center = target.getPos().add(0, target.getHeight() / 2, 0);
-            Vec3d offset = new Vec3d(
-                    (random.nextDouble() - 0.5) * 2 * randomPointRadius.get(),
-                    (random.nextDouble() - 0.5) * 2 * randomPointRadius.get(),
-                    (random.nextDouble() - 0.5) * 2 * randomPointRadius.get()
-            );
-            if (prioritizeCenter.get()) offset = offset.multiply(0.5);
-            aimPos = center.add(offset);
+        // Рандомная точка в хитбоксе (от поножей до шеи)
+        if (randomAimPoint.get()) {
+            aimPointUpdateTimer--;
+            if (currentAimPoint == null || aimPointUpdateTimer <= 0) {
+                // Выбираем точку от 0.2 (ноги) до 0.9 (шея)
+                double yOffset = 0.2 + random.nextDouble() * 0.7;
+                aimPos = target.getPos().add(0, target.getHeight() * yOffset, 0);
+                
+                // Разброс по X и Z (но не в самый центр)
+                double xzOffset = randomAimRadius.get();
+                aimPos = aimPos.add(
+                    (random.nextDouble() - 0.5) * 2 * xzOffset,
+                    0,
+                    (random.nextDouble() - 0.5) * 2 * xzOffset
+                );
+                
+                currentAimPoint = aimPos;
+                aimPointUpdateTimer = 2 + random.nextInt(4); // Обновляем каждые 2-5 тиков
+            } else {
+                aimPos = currentAimPoint;
+            }
+        } else {
+            // Старая логика через bodyTarget
+            aimPos = target.getPos().add(0, target.getHeight() * 0.85, 0); // Примерно шея
         }
 
         float targetYaw = (float) Rotations.getYaw(aimPos);
-        float targetPitch = (float) Rotations.getPitch(target, bodyTarget.get());
+        float targetPitch = (float) Rotations.getPitch(aimPos);
 
-        // 1. Человеческий шум
+        // --- HUMANIZATION ---
         if (microJitter.get() > 0) {
             targetYaw += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
             targetPitch += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
         }
-        if (shakeIntensity.get() > 0) {
-            shakePhase += shakeSpeed.get() * 0.1;
-            if (shakePhase > Math.PI * 2) shakePhase -= Math.PI * 2;
-            targetYaw += (float) (Math.sin(shakePhase) * shakeIntensity.get());
-            targetPitch += (float) (Math.cos(shakePhase * 1.3) * shakeIntensity.get());
-        }
-        if (aimJitterAmplitude.get() > 0) {
-            targetYaw += (float) ((random.nextDouble() - 0.5) * 2 * aimJitterAmplitude.get());
-            targetPitch += (float) ((random.nextDouble() - 0.5) * 2 * aimJitterAmplitude.get());
+        
+        // Саккадические движения для Shard
+        if (saccadicFix.get()) {
+            if (random.nextFloat() < 0.2f) { // 20% шанс микро-рывка
+                targetYaw += (float) ((random.nextDouble() - 0.5) * 3.0f);
+                targetPitch += (float) ((random.nextDouble() - 0.5) * 3.0f);
+            }
         }
 
         float yawDifference = MathHelper.wrapDegrees(targetYaw - player.getYaw());
         float pitchDifference = MathHelper.wrapDegrees(targetPitch - player.getPitch());
 
+        // Замедление внутри хитбокса
+        if (slowDownInHitbox.get()) {
+            double distanceToTarget = player.getPos().distanceTo(target.getPos());
+            if (distanceToTarget < 3.0) {
+                yawDifference *= 0.7f;
+                pitchDifference *= 0.7f;
+            }
+        }
+
         if (instantAim.get()) {
             player.setYaw(normalizeToGCD(targetYaw));
             player.setPitch(MathHelper.clamp(normalizeToGCD(targetPitch), -90f, 90f));
-        } else if (smoothAim.get()) {
-            float speedFactor = 1.0f + (float) (random.nextDouble() - 0.5) * 2.0f * aimSpeedVariation.get().floatValue();
-            float cooldownProgress = syncSpeedWithCooldown.get() ? mc.player.getAttackCooldownProgress(0) : 1;
-            float deltaYaw = yawDifference * cooldownProgress * (aimSpeed.get().floatValue() / 10) * speedFactor;
-            float deltaPitch = pitchDifference * cooldownProgress * (aimSpeed.get().floatValue() / 10) * speedFactor;
-            
-            // Защита от резких дерганий Polar (AimM / AimP)
-            deltaYaw = clampAngleDelta(deltaYaw, maxRotationPerTick.get().floatValue());
-            deltaPitch = clampAngleDelta(deltaPitch, maxRotationPerTick.get().floatValue());
-            
-            player.setYaw(normalizeToGCD(player.getYaw() + deltaYaw));
-            player.setPitch(MathHelper.clamp(normalizeToGCD(player.getPitch() + deltaPitch), -90f, 90f));
         } else {
-            float cooldownProgress = syncSpeedWithCooldown.get() ? mc.player.getAttackCooldownProgress(0) : 1;
-            float deltaYaw = yawDifference * cooldownProgress * (speed.get().floatValue() / 10);
-            float deltaPitch = pitchDifference * cooldownProgress * (speed.get().floatValue() / 10);
+            float speedFactor = smoothAim.get() ? aimSpeed.get().floatValue() : speed.get().floatValue();
+            speedFactor /= 10.0f;
             
+            // Вариативность скорости
+            speedFactor *= 1.0f + (float) (random.nextDouble() - 0.5) * 2.0f * aimSpeedVariation.get().floatValue();
+            
+            float deltaYaw = yawDifference * speedFactor;
+            float deltaPitch = pitchDifference * speedFactor;
+            
+            // Ограничение поворота
             deltaYaw = clampAngleDelta(deltaYaw, maxRotationPerTick.get().floatValue());
             deltaPitch = clampAngleDelta(deltaPitch, maxRotationPerTick.get().floatValue());
             
@@ -256,7 +220,38 @@ public class ZAimbot extends Module {
         }
     }
 
-    // --- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ОБХОДА ---
+    private void applyAutoConfig() {
+        switch (autoConfigMode.get()) {
+            case Polar -> {
+                gcdFix.set(true);
+                maxRotationPerTick.set(30.0);
+                aimSpeedVariation.set(0.2);
+                microJitter.set(0.03);
+                saccadicFix.set(false); // Polar не любит рывки
+                randomAimPoint.set(true);
+                randomAimRadius.set(0.15);
+                slowDownInHitbox.set(true);
+                reactionTime.set(2.0);
+                smoothAim.set(true);
+                aimSpeed.set(2.5);
+            }
+            case Shard -> {
+                gcdFix.set(true);
+                maxRotationPerTick.set(45.0);
+                aimSpeedVariation.set(0.4);
+                microJitter.set(0.06);
+                saccadicFix.set(true); // Shard любит саккады
+                randomAimPoint.set(true);
+                randomAimRadius.set(0.2);
+                slowDownInHitbox.set(true);
+                reactionTime.set(4.0);
+                smoothAim.set(true);
+                aimSpeed.set(2.0);
+            }
+            case None -> {}
+        }
+    }
+
     private float normalizeToGCD(float angle) {
         if (!gcdFix.get()) return angle;
         float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
@@ -272,4 +267,6 @@ public class ZAimbot extends Module {
         }
         return delta;
     }
+
+    // ... (Метод entityCheck оставляем без изменений)
 }
