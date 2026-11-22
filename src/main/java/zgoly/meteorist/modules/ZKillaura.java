@@ -193,8 +193,7 @@ public class ZKillaura extends Module {
         Entity entity = ((EntityHitResult) hitResult).getEntity();
         LivingEntity livingEntity = (LivingEntity) entity;
 
-        // Проверка на бессмертие (чтобы не спамить в пустоту)
-        if (livingEntity.hurtTime > 0 || livingEntity.timeUntilRegen > 0) return;
+        // (УДАЛЕНА ПРОВЕРКА НА БЕССМЕРТИЕ)
 
         // Логика щита
         if (shieldMode.get() == ShieldMode.Break) {
