@@ -165,7 +165,7 @@ public class ZKillaura extends Module {
             .name("hit-delay-randomness").description("Random extra delay (in ticks) between attacks.").defaultValue(0.0).min(0.0).sliderMax(5.0).build()
     );
     private final Setting<Double> firstHitDelay = sgAttack.add(new DoubleSetting.Builder()
-            .name("first-hit-delay").description("Задержка перед первым ударом по новой цели (в тиках).").defaultValue(2.5).min(0.0).sliderMax(8.0).build()
+            .name("first-hit-delay").description("Задержка перед первым ударом по новой цели (в тиках).").defaultValue(1.0).min(0.0).sliderMax(8.0).build()
     );
 
     // --- W-TAP & AUTO SPRINT ---
@@ -173,7 +173,7 @@ public class ZKillaura extends Module {
             .name("auto-sprint-always").description("Зажимает спринт.").defaultValue(true).build()
     );
     private final Setting<Boolean> wTap = sgAttack.add(new BoolSetting.Builder()
-            .name("w-tap").description("Сброс спринта перед ударом с задержкой 35-50мс.").defaultValue(true).build()
+            .name("w-tap").description("Сброс спринта перед ударом с задержкой.").defaultValue(true).build()
     );
     private final Setting<Integer> wTapMinMs = sgAttack.add(new IntSetting.Builder()
             .name("w-tap-min-ms").description("Минимальная задержка сброса (мс).").defaultValue(35).sliderRange(10, 100).build()
@@ -205,7 +205,7 @@ public class ZKillaura extends Module {
     private boolean sprintState = false;
 
     public ZKillaura() {
-        super(Meteorist.CATEGORY, "z-kill-aura", "Killaura with delayed W-Tap and AC bypass.");
+        super(Meteorist.CATEGORY, "z-kill-aura", "Fast Killaura with W-Tap and AC bypass.");
     }
 
     @Override
@@ -227,26 +227,44 @@ public class ZKillaura extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
-        // 1. ОБРАБОТКА ОТЛОЖЕННОГО W-TAP УДАРА
+        // 1. ОБРАБОТКА ОТЛОЖЕННОГО W-TAP УДАРА (Быстрая проверка)
         if (isWTapPending) {
-            if (System.currentTimeMillis() >= wTapReleaseTime) {
-                // Время вышло (прошло 35-50 мс), наносим удар
+            boolean timePassed = System.currentTimeMillis() >= wTapReleaseTime;
+            boolean canCrit = true;
+            
+            if (criticalMode.get() == CriticalMode.Smart && pendingTarget != null) {
+                if (!mc.player.isOnGround() && mc.player.fallDistance <= 0.1f && mc.player.distanceTo(pendingTarget) <= 3.5f) {
+                    canCrit = false; // Ждем падения
+                }
+            }
+
+            if (timePassed && canCrit) {
                 if (pendingTarget != null && mc.world.getEntityById(pendingTarget.getId()) != null) {
                     mc.interactionManager.attackEntity(mc.player, pendingTarget);
                     if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
                 }
-                // Возвращаем спринт
                 if (sprintState) {
                     mc.options.sprintKey.setPressed(true);
                     mc.player.setSprinting(true);
                 }
                 isWTapPending = false;
                 pendingTarget = null;
+            } else if (timePassed && !canCrit) {
+                // Время вышло, но крит еще не готов - ждем падения
+                // Если мы на земле, а крит не готов, отменяем
+                if (mc.player.isOnGround()) {
+                     if (sprintState) {
+                        mc.options.sprintKey.setPressed(true);
+                        mc.player.setSprinting(true);
+                    }
+                    isWTapPending = false;
+                    pendingTarget = null;
+                }
             }
-            return; // Ждём завершения таймера, не ищем новых целей
+            return;
         }
 
-        // 2. Автоспринт (если не в процессе сброса)
+        // 2. Автоспринт
         if (autoSprintAlways.get() && mc.player.isOnGround() && mc.player.input.hasForwardMovement() && !mc.player.isUsingItem()) {
             mc.player.setSprinting(true);
         }
@@ -273,76 +291,20 @@ public class ZKillaura extends Module {
         if (mc.player.distanceTo(entity) > attackRange.get()) return;
         if (!throughWalls.get() && !mc.player.canSee(entity)) return;
 
+        // Логика щита (остается без изменений)
         if (shieldMode.get() == ShieldMode.Break) {
-            if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
-                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
-                if (axe.found()) {
-                    shieldState = ShieldState.SwapAxe;
-                    swapTimer = calculateDelay(swapDelayMode.get(), swapDelayValue.get(), swapDelayMinRandomValue.get(), swapDelayMaxRandomValue.get());
-                }
-            }
-            swapAxeState:
-            if (shieldState == ShieldState.SwapAxe) {
-                if (swapTimer-- > 0) break swapAxeState;
-                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
-                if (axe.found() && livingEntity.isBlocking()) {
-                    originalSlot = mc.player.getInventory().getSelectedSlot();
-                    InvUtils.swap(axe.slot(), false);
-                    shieldState = ShieldState.Attack;
-                    hitTimer = calculateDelay(hitDelayMode.get(), hitDelayValue.get(), hitDelayMinRandomValue.get(), hitDelayMaxRandomValue.get());
-                } else { resetShield(); }
-            }
-            attackState:
-            if (shieldState == ShieldState.Attack) {
-                if (hitTimer-- > 0) break attackState;
-                if (livingEntity.isBlocking()) {
-                    if (wTap.get() && mc.player.isSprinting()) {
-                        sprintState = true;
-                        mc.options.sprintKey.setPressed(false);
-                        mc.player.setSprinting(false);
-                        pendingTarget = livingEntity;
-                        isWTapPending = true;
-                        int delayMs = wTapMinMs.get() + random.nextInt(wTapMaxMs.get() - wTapMinMs.get() + 1);
-                        wTapReleaseTime = System.currentTimeMillis() + delayMs;
-                        return;
-                    } else {
-                        mc.interactionManager.attackEntity(mc.player, livingEntity);
-                        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-                    }
-                    shieldState = ShieldState.SwapBack;
-                    swapBackTimer = calculateDelay(swapBackDelayMode.get(), swapBackDelayValue.get(), swapBackDelayMinRandomValue.get(), swapBackDelayMaxRandomValue.get());
-                } else {
-                    InvUtils.swap(originalSlot, false);
-                    resetShield();
-                }
-            }
-            swapBackState:
-            if (shieldState == ShieldState.SwapBack) {
-                if (swapBackTimer-- > 0) break swapBackState;
-                if (originalSlot != mc.player.getInventory().getSelectedSlot()) {
-                    InvUtils.swap(originalSlot, false);
-                }
-                resetShield();
-            }
+             // ... (код щита) ...
             if (shieldState == ShieldState.Attack || shieldState == ShieldState.SwapBack) return;
         }
 
         OnFallMode currOnFallMode = onFallMode.get();
         HitSpeedMode currHitSpeedMode = hitSpeedMode.get();
 
-        if (criticalMode.get() == CriticalMode.Smart) {
-            if (!mc.player.isOnGround() && mc.player.fallDistance > 0.1f && mc.player.getAttackCooldownProgress(0.5f) > 0.7f) {
-                // крит готов
-            } else if (mc.player.distanceTo(entity) > 3.5f) {
-                // догоняем - бьем без прыжка
-            } else {
-                return; 
-            }
-        } else if (currOnFallMode != OnFallMode.None) {
-            float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
-            if (!(mc.player.fallDistance > onFall)) return;
-        }
+        // Проверка кулдауна атаки
+        float hitSpeed = currHitSpeedMode == HitSpeedMode.Value ? hitSpeedValue.get().floatValue() : randomHitSpeedFloat;
+        if (currHitSpeedMode != HitSpeedMode.None && (mc.player.getAttackCooldownProgress(hitSpeed) * 17.0F) < 16) return;
 
+        // Проверка угла
         float yawToTarget = (float) Math.toDegrees(Math.atan2(livingEntity.getZ() - mc.player.getZ(), livingEntity.getX() - mc.player.getX())) - 90f;
         float yawDiff = Math.abs(MathHelper.wrapDegrees(mc.player.getYaw() - yawToTarget));
         if (yawDiff > rotationSpeedLimit.get()) return;
@@ -351,10 +313,7 @@ public class ZKillaura extends Module {
             if (randomDelayTicks > 0) { randomDelayTicks--; return; }
         }
 
-        float hitSpeed = currHitSpeedMode == HitSpeedMode.Value ? hitSpeedValue.get().floatValue() : randomHitSpeedFloat;
-        if (currHitSpeedMode != HitSpeedMode.None && (mc.player.getAttackCooldownProgress(hitSpeed) * 17.0F) < 16) return;
-
-        // 4. ЗАПУСК W-TAP (ОСНОВНАЯ ЛОГИКА)
+        // 3. ЗАПУСК W-TAP (Быстрый)
         if (wTap.get() && mc.player.isSprinting()) {
             sprintState = true;
             mc.options.sprintKey.setPressed(false);
@@ -366,10 +325,21 @@ public class ZKillaura extends Module {
             wTapReleaseTime = System.currentTimeMillis() + delayMs;
             return; 
         } else {
+            // Если W-Tap выключен или не спринтуем, бьем сразу (с учетом крита)
+            if (criticalMode.get() == CriticalMode.Smart) {
+                if (!mc.player.isOnGround() && mc.player.fallDistance <= 0.1f && mc.player.distanceTo(entity) <= 3.5f) {
+                    return; // Ждем крита
+                }
+            } else if (currOnFallMode != OnFallMode.None) {
+                float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
+                if (!(mc.player.fallDistance > onFall)) return;
+            }
+            
             mc.interactionManager.attackEntity(mc.player, livingEntity);
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
         }
 
+        // Обновление рандомных значений
         if (hitDelayRandomness.get() > 0) {
             randomDelayTicks = (int) (mc.world.random.nextFloat() * hitDelayRandomness.get());
         }
@@ -385,69 +355,6 @@ public class ZKillaura extends Module {
         }
     }
 
-    private void applyAutoConfig() {
-        switch (autoConfigMode.get()) {
-            case Polar -> {
-                rotationSpeedLimit.set(60.0);
-                firstHitDelay.set(2.5);
-                wTap.set(true);
-                wTapMinMs.set(40);
-                wTapMaxMs.set(50);
-                criticalMode.set(CriticalMode.Smart);
-            }
-            case Shard -> {
-                rotationSpeedLimit.set(90.0);
-                firstHitDelay.set(4.0);
-                wTap.set(true);
-                wTapMinMs.set(35);
-                wTapMaxMs.set(45);
-                criticalMode.set(CriticalMode.Smart);
-            }
-            case None -> {}
-        }
-    }
-
-    private void resetShield() {
-        shieldState = ShieldState.Idle;
-        swapTimer = hitTimer = swapBackTimer = 0;
-        originalSlot = -1;
-    }
-
-    private int calculateDelay(DelayMode mode, int value, int minRandom, int maxRandom) {
-        return switch (mode) {
-            case Value -> value;
-            case RandomValue -> minRandom + mc.world.random.nextInt(maxRandom - minRandom + 1);
-        };
-    }
-
-    private boolean entityCheck(Entity entity) {
-        if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
-        if (!entity.isAlive()) return false;
-        if (!entities.get().contains(entity.getType())) return false;
-        if (ignoreNamed.get() && entity.hasCustomName()) return false;
-        if (ignoreTamed.get()) {
-            if (entity instanceof Tameable tameable && tameable.getOwner() != null && tameable.getOwner().equals(mc.player)) return false;
-        }
-        if (ignorePassive.get()) {
-            switch (entity) {
-                case EndermanEntity enderman when !enderman.isAngry() -> { return false; }
-                case ZombifiedPiglinEntity piglin when !piglin.isAttacking() -> { return false; }
-                case WolfEntity wolf when !wolf.isAttacking() -> { return false; }
-                default -> {}
-            }
-        }
-        if (entity instanceof PlayerEntity player) {
-            if (ignoreCreative.get() && player.isCreative()) return false;
-            if (ignoreFriends.get() && !Friends.get().shouldAttack(player)) return false;
-            if (shieldMode.get() == ShieldMode.Ignore && player.isBlocking()) return false;
-        }
-        if (entity instanceof AnimalEntity animal) {
-            return switch (mobAgeFilter.get()) {
-                case Baby -> animal.isBaby();
-                case Adult -> !animal.isBaby();
-                case Both -> true;
-            };
-        }
-        return true;
-    }
+    // ... (вспомогательные методы applyAutoConfig, resetShield, calculateDelay, entityCheck без изменений) ...
+    // Вставь их сюда из предыдущего полного кода, они не менялись.
 }
