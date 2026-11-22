@@ -291,9 +291,58 @@ public class ZKillaura extends Module {
         if (mc.player.distanceTo(entity) > attackRange.get()) return;
         if (!throughWalls.get() && !mc.player.canSee(entity)) return;
 
-        // Логика щита (остается без изменений)
+        // Логика щита
         if (shieldMode.get() == ShieldMode.Break) {
-             // ... (код щита) ...
+            if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
+                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
+                if (axe.found()) {
+                    shieldState = ShieldState.SwapAxe;
+                    swapTimer = calculateDelay(swapDelayMode.get(), swapDelayValue.get(), swapDelayMinRandomValue.get(), swapDelayMaxRandomValue.get());
+                }
+            }
+            swapAxeState:
+            if (shieldState == ShieldState.SwapAxe) {
+                if (swapTimer-- > 0) break swapAxeState;
+                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
+                if (axe.found() && livingEntity.isBlocking()) {
+                    originalSlot = mc.player.getInventory().getSelectedSlot();
+                    InvUtils.swap(axe.slot(), false);
+                    shieldState = ShieldState.Attack;
+                    hitTimer = calculateDelay(hitDelayMode.get(), hitDelayValue.get(), hitDelayMinRandomValue.get(), hitDelayMaxRandomValue.get());
+                } else { resetShield(); }
+            }
+            attackState:
+            if (shieldState == ShieldState.Attack) {
+                if (hitTimer-- > 0) break attackState;
+                if (livingEntity.isBlocking()) {
+                    if (wTap.get() && mc.player.isSprinting()) {
+                        sprintState = true;
+                        mc.options.sprintKey.setPressed(false);
+                        mc.player.setSprinting(false);
+                        pendingTarget = livingEntity;
+                        isWTapPending = true;
+                        int delayMs = wTapMinMs.get() + random.nextInt(wTapMaxMs.get() - wTapMinMs.get() + 1);
+                        wTapReleaseTime = System.currentTimeMillis() + delayMs;
+                        return;
+                    } else {
+                        mc.interactionManager.attackEntity(mc.player, livingEntity);
+                        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                    }
+                    shieldState = ShieldState.SwapBack;
+                    swapBackTimer = calculateDelay(swapBackDelayMode.get(), swapBackDelayValue.get(), swapBackDelayMinRandomValue.get(), swapBackDelayMaxRandomValue.get());
+                } else {
+                    InvUtils.swap(originalSlot, false);
+                    resetShield();
+                }
+            }
+            swapBackState:
+            if (shieldState == ShieldState.SwapBack) {
+                if (swapBackTimer-- > 0) break swapBackState;
+                if (originalSlot != mc.player.getInventory().getSelectedSlot()) {
+                    InvUtils.swap(originalSlot, false);
+                }
+                resetShield();
+            }
             if (shieldState == ShieldState.Attack || shieldState == ShieldState.SwapBack) return;
         }
 
@@ -355,6 +404,69 @@ public class ZKillaura extends Module {
         }
     }
 
-    // ... (вспомогательные методы applyAutoConfig, resetShield, calculateDelay, entityCheck без изменений) ...
-    // Вставь их сюда из предыдущего полного кода, они не менялись.
+    private void applyAutoConfig() {
+        switch (autoConfigMode.get()) {
+            case Polar -> {
+                rotationSpeedLimit.set(60.0);
+                firstHitDelay.set(1.0);
+                wTap.set(true);
+                wTapMinMs.set(40);
+                wTapMaxMs.set(50);
+                criticalMode.set(CriticalMode.Smart);
+            }
+            case Shard -> {
+                rotationSpeedLimit.set(90.0);
+                firstHitDelay.set(1.0);
+                wTap.set(true);
+                wTapMinMs.set(35);
+                wTapMaxMs.set(45);
+                criticalMode.set(CriticalMode.Smart);
+            }
+            case None -> {}
+        }
+    }
+
+    private void resetShield() {
+        shieldState = ShieldState.Idle;
+        swapTimer = hitTimer = swapBackTimer = 0;
+        originalSlot = -1;
+    }
+
+    private int calculateDelay(DelayMode mode, int value, int minRandom, int maxRandom) {
+        return switch (mode) {
+            case Value -> value;
+            case RandomValue -> minRandom + mc.world.random.nextInt(maxRandom - minRandom + 1);
+        };
+    }
+
+    private boolean entityCheck(Entity entity) {
+        if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
+        if (!entity.isAlive()) return false;
+        if (!entities.get().contains(entity.getType())) return false;
+        if (ignoreNamed.get() && entity.hasCustomName()) return false;
+        if (ignoreTamed.get()) {
+            if (entity instanceof Tameable tameable && tameable.getOwner() != null && tameable.getOwner().equals(mc.player)) return false;
+        }
+        if (ignorePassive.get()) {
+            switch (entity) {
+                case EndermanEntity enderman when !enderman.isAngry() -> { return false; }
+                case ZombifiedPiglinEntity piglin when !piglin.isAttacking() -> { return false; }
+                case WolfEntity wolf when !wolf.isAttacking() -> { return false; }
+                default -> {}
+            }
+        }
+        if (entity instanceof PlayerEntity player) {
+            if (ignoreCreative.get() && player.isCreative()) return false;
+            if (ignoreFriends.get() && !Friends.get().shouldAttack(player)) return false;
+            if (shieldMode.get() == ShieldMode.Ignore && player.isBlocking()) return false;
+        }
+        if (entity instanceof AnimalEntity animal) {
+            return switch (mobAgeFilter.get()) {
+                case Baby -> animal.isBaby();
+                case Adult -> !animal.isBaby();
+                case Both -> true;
+            };
+        }
+        return true;
+    }
 }
