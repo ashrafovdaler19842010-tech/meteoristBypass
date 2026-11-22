@@ -182,10 +182,6 @@ public class ZKillaura extends Module {
             .name("w-tap-max-ms").description("Максимальная задержка сброса (мс).").defaultValue(50).sliderRange(10, 150).build()
     );
 
-    private final Setting<AutoConfig> autoConfigMode = sgAttack.add(new EnumSetting.Builder<AutoConfig>()
-            .name("auto-config").description("Автоматически подбирает настройки под античит.").defaultValue(AutoConfig.None).build()
-    );
-
     float randomOnFallFloat = 0;
     float randomHitSpeedFloat = 0;
     private int randomDelayTicks = 0;
@@ -220,48 +216,40 @@ public class ZKillaura extends Module {
         originalSlot = -1;
         isWTapPending = false;
         pendingTarget = null;
-        applyAutoConfig();
     }
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
-        // 1. ОБРАБОТКА ОТЛОЖЕННОГО W-TAP УДАРА (Быстрая проверка)
+        // 1. ОБРАБОТКА ОТЛОЖЕННОГО W-TAP УДАРА
         if (isWTapPending) {
-            boolean timePassed = System.currentTimeMillis() >= wTapReleaseTime;
-            boolean canCrit = true;
-            
-            if (criticalMode.get() == CriticalMode.Smart && pendingTarget != null) {
-                if (!mc.player.isOnGround() && mc.player.fallDistance <= 0.1f && mc.player.distanceTo(pendingTarget) <= 3.5f) {
-                    canCrit = false; // Ждем падения
-                }
-            }
-
-            if (timePassed && canCrit) {
+            if (System.currentTimeMillis() >= wTapReleaseTime) {
                 if (pendingTarget != null && mc.world.getEntityById(pendingTarget.getId()) != null) {
-                    mc.interactionManager.attackEntity(mc.player, pendingTarget);
-                    if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                    // Проверка крита прямо перед ударом
+                    boolean canHit = true;
+                    if (criticalMode.get() == CriticalMode.Smart) {
+                        // Если мы не падаем и цель близко, можно ударить (чтобы не тупить)
+                        // Если мы в воздухе, но еще не падаем — ждем (но таймер уже вышел, так что бьем)
+                        if (mc.player.fallDistance <= 0 && mc.player.isOnGround() && mc.player.distanceTo(pendingTarget) > 3.5f) {
+                            canHit = true; // догоняем, бьем
+                        }
+                    }
+                    
+                    if (canHit) {
+                        mc.interactionManager.attackEntity(mc.player, pendingTarget);
+                        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                    }
                 }
+                // Возвращаем спринт
                 if (sprintState) {
                     mc.options.sprintKey.setPressed(true);
                     mc.player.setSprinting(true);
                 }
                 isWTapPending = false;
                 pendingTarget = null;
-            } else if (timePassed && !canCrit) {
-                // Время вышло, но крит еще не готов - ждем падения
-                // Если мы на земле, а крит не готов, отменяем
-                if (mc.player.isOnGround()) {
-                     if (sprintState) {
-                        mc.options.sprintKey.setPressed(true);
-                        mc.player.setSprinting(true);
-                    }
-                    isWTapPending = false;
-                    pendingTarget = null;
-                }
             }
-            return;
+            return; 
         }
 
         // 2. Автоспринт
@@ -362,7 +350,7 @@ public class ZKillaura extends Module {
             if (randomDelayTicks > 0) { randomDelayTicks--; return; }
         }
 
-        // 3. ЗАПУСК W-TAP (Быстрый)
+        // 3. ЗАПУСК W-TAP
         if (wTap.get() && mc.player.isSprinting()) {
             sprintState = true;
             mc.options.sprintKey.setPressed(false);
@@ -374,16 +362,7 @@ public class ZKillaura extends Module {
             wTapReleaseTime = System.currentTimeMillis() + delayMs;
             return; 
         } else {
-            // Если W-Tap выключен или не спринтуем, бьем сразу (с учетом крита)
-            if (criticalMode.get() == CriticalMode.Smart) {
-                if (!mc.player.isOnGround() && mc.player.fallDistance <= 0.1f && mc.player.distanceTo(entity) <= 3.5f) {
-                    return; // Ждем крита
-                }
-            } else if (currOnFallMode != OnFallMode.None) {
-                float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
-                if (!(mc.player.fallDistance > onFall)) return;
-            }
-            
+            // Если W-Tap выключен или не спринтуем, бьем сразу
             mc.interactionManager.attackEntity(mc.player, livingEntity);
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
         }
@@ -401,28 +380,6 @@ public class ZKillaura extends Module {
             float min = Math.min(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
             float max = Math.max(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
             randomHitSpeedFloat = min + mc.world.random.nextFloat() * (max - min);
-        }
-    }
-
-    private void applyAutoConfig() {
-        switch (autoConfigMode.get()) {
-            case Polar -> {
-                rotationSpeedLimit.set(60.0);
-                firstHitDelay.set(1.0);
-                wTap.set(true);
-                wTapMinMs.set(40);
-                wTapMaxMs.set(50);
-                criticalMode.set(CriticalMode.Smart);
-            }
-            case Shard -> {
-                rotationSpeedLimit.set(90.0);
-                firstHitDelay.set(1.0);
-                wTap.set(true);
-                wTapMinMs.set(35);
-                wTapMaxMs.set(45);
-                criticalMode.set(CriticalMode.Smart);
-            }
-            case None -> {}
         }
     }
 
