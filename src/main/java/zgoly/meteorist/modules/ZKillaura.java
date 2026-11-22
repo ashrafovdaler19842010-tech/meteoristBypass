@@ -150,7 +150,7 @@ public class ZKillaura extends Module {
             .name("only-sword").description("Attack only when holding a sword.").defaultValue(false).build()
     );
     private final Setting<CriticalMode> criticalMode = sgAttack.add(new EnumSetting.Builder<CriticalMode>()
-            .name("critical-mode").description("Smart = приоритет критов, но бьет без прыжка если цель далеко.").defaultValue(CriticalMode.Smart).build()
+            .name("critical-mode").description("Smart = приоритет критов при прыжке, но бьет без прыжка если стоишь на земле.").defaultValue(CriticalMode.Smart).build()
     );
     private final Setting<Double> rotationSpeedLimit = sgAttack.add(new DoubleSetting.Builder()
             .name("rotation-speed-limit").description("Max degrees you can be off-target to hit.").defaultValue(75.0).min(10.0).sliderMax(360.0).build()
@@ -188,12 +188,13 @@ public class ZKillaura extends Module {
     
     private UUID lastKillauraTarget = null;
     private int killauraTargetTicks = 0;
+    private int ticksOnGround = 0;
+    private boolean hasCritThisFall = false;
 
     private ShieldState shieldState = ShieldState.Idle;
     private int swapTimer = 0, hitTimer = 0, swapBackTimer = 0;
     private int originalSlot = -1;
 
-    // W-Tap переменные
     private final Random random = new Random();
     private long wTapReleaseTime = 0;
     private boolean isWTapPending = false;
@@ -211,6 +212,8 @@ public class ZKillaura extends Module {
         randomDelayTicks = 0;
         lastKillauraTarget = null;
         killauraTargetTicks = 0;
+        ticksOnGround = 0;
+        hasCritThisFall = false;
         shieldState = ShieldState.Idle;
         swapTimer = hitTimer = swapBackTimer = 0;
         originalSlot = -1;
@@ -222,24 +225,25 @@ public class ZKillaura extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
+        // Отслеживаем время на земле для умных критов
+        if (mc.player.isOnGround()) {
+            ticksOnGround++;
+            hasCritThisFall = false; // Сброс при приземлении
+        } else {
+            ticksOnGround = 0;
+        }
+
         // 1. ОБРАБОТКА ОТЛОЖЕННОГО W-TAP УДАРА
         if (isWTapPending) {
             if (System.currentTimeMillis() >= wTapReleaseTime) {
                 if (pendingTarget != null && mc.world.getEntityById(pendingTarget.getId()) != null) {
-                    // Проверка крита прямо перед ударом
-                    boolean canHit = true;
-                    if (criticalMode.get() == CriticalMode.Smart) {
-                        // Если мы не падаем и цель близко, можно ударить (чтобы не тупить)
-                        // Если мы в воздухе, но еще не падаем — ждем (но таймер уже вышел, так что бьем)
-                        if (mc.player.fallDistance <= 0 && mc.player.isOnGround() && mc.player.distanceTo(pendingTarget) > 3.5f) {
-                            canHit = true; // догоняем, бьем
-                        }
-                    }
+                    // Бьем
+                    mc.interactionManager.attackEntity(mc.player, pendingTarget);
+                    if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
                     
-                    if (canHit) {
-                        mc.interactionManager.attackEntity(mc.player, pendingTarget);
-                        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-                    }
+                    // Фиксируем крит и лочим таргет в аиме
+                    hasCritThisFall = true;
+                    ZAimbot.lockTarget(pendingTarget);
                 }
                 // Возвращаем спринт
                 if (sprintState) {
@@ -268,6 +272,9 @@ public class ZKillaura extends Module {
 
         Entity entity = ((EntityHitResult) hitResult).getEntity();
         LivingEntity livingEntity = (LivingEntity) entity;
+
+        // ПРОВЕРКА НА БЕССМЕРТИЕ (i-frames)
+        if (livingEntity.hurtTime > 0 || livingEntity.timeUntilRegen > 0) return;
 
         if (!entity.getUuid().equals(lastKillauraTarget)) {
             lastKillauraTarget = entity.getUuid();
@@ -315,6 +322,7 @@ public class ZKillaura extends Module {
                     } else {
                         mc.interactionManager.attackEntity(mc.player, livingEntity);
                         if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                        ZAimbot.lockTarget(livingEntity);
                     }
                     shieldState = ShieldState.SwapBack;
                     swapBackTimer = calculateDelay(swapBackDelayMode.get(), swapBackDelayValue.get(), swapBackDelayMinRandomValue.get(), swapBackDelayMaxRandomValue.get());
@@ -350,6 +358,21 @@ public class ZKillaura extends Module {
             if (randomDelayTicks > 0) { randomDelayTicks--; return; }
         }
 
+        // --- УМНЫЕ КРИТЫ ---
+        if (criticalMode.get() == CriticalMode.Smart) {
+            if (ticksOnGround > 10) {
+                // На земле больше 0.5 сек - бьем быстро без критов
+            } else {
+                // В воздухе - ждем падения
+                if (mc.player.getVelocity().y >= 0) return; // Еще прыгаем вверх
+                if (mc.player.fallDistance <= 0.1f) return; // Недостаточно упали
+                if (hasCritThisFall) return; // Уже ударили в этом падении
+            }
+        } else if (currOnFallMode != OnFallMode.None) {
+            float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
+            if (!(mc.player.fallDistance > onFall)) return;
+        }
+
         // 3. ЗАПУСК W-TAP
         if (wTap.get() && mc.player.isSprinting()) {
             sprintState = true;
@@ -365,6 +388,8 @@ public class ZKillaura extends Module {
             // Если W-Tap выключен или не спринтуем, бьем сразу
             mc.interactionManager.attackEntity(mc.player, livingEntity);
             if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+            ZAimbot.lockTarget(livingEntity);
+            hasCritThisFall = true; // Фиксируем удар
         }
 
         // Обновление рандомных значений
