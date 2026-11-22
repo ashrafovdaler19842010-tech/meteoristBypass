@@ -18,11 +18,11 @@ import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.AxeItem;
-import net.minecraft.item.SwordItem; // НОВЫЙ ИМПОРТ
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.MathHelper; // НОВЫЙ ИМПОРТ
+import net.minecraft.util.math.MathHelper;
 import zgoly.meteorist.Meteorist;
 import zgoly.meteorist.utils.MeteoristUtils;
 
@@ -34,7 +34,6 @@ public class ZKillaura extends Module {
     private final SettingGroup sgShield = settings.createGroup("Shield");
     private final SettingGroup sgVisual = settings.createGroup("Visual");
 
-    // ... ВАШИ СТАРЫЕ НАСТРОЙКИ ФИЛЬТРА ...
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to attack.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
@@ -63,7 +62,6 @@ public class ZKillaura extends Module {
             .name("ignore-walls").description("Whether or not to attack mobs through walls.").defaultValue(false).build()
     );
 
-    // ... ВАШИ СТАРЫЕ НАСТРОЙКИ АТАКИ ...
     private final Setting<OnFallMode> onFallMode = sgAttack.add(new EnumSetting.Builder<OnFallMode>()
             .name("on-fall-mode").description("Chooses an attack strategy when falling to maximize critical damage.").defaultValue(OnFallMode.Value).build()
     );
@@ -89,7 +87,6 @@ public class ZKillaura extends Module {
             .name("hit-speed-max-random-value").description("Max randomized hit speed.").defaultValue(0.0).sliderRange(-10, 10).visible(() -> hitSpeedMode.get() == HitSpeedMode.RandomValue).build()
     );
 
-    // ... ВАШИ СТАРЫЕ НАСТРОЙКИ ЩИТА (ОСТАВЛЕНЫ БЕЗ ИЗМЕНЕНИЙ) ...
     private final Setting<ShieldMode> shieldMode = sgShield.add(new EnumSetting.Builder<ShieldMode>()
             .name("shield-mode").description("Will try and use an axe to break target shields.").defaultValue(ShieldMode.Break).build()
     );
@@ -130,14 +127,11 @@ public class ZKillaura extends Module {
             .name("swap-back-delay-max-random-value").description("Max randomized delay before swapping back.").defaultValue(5).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.RandomValue).build()
     );
 
-    // ... ВАША СТАРАЯ НАСТРОЙКА ВИЗУАЛА ...
     private final Setting<Boolean> swingHand = sgVisual.add(new BoolSetting.Builder()
             .name("swing-hand").description("Makes hand swing visible client-side.").defaultValue(true).build()
     );
 
-    // ==========================================
-    // НОВЫЕ НАСТРОЙКИ ДЛЯ БАЙПАСА (В GUI)
-    // ==========================================
+    // НОВЫЕ НАСТРОЙКИ (В GUI)
     private final Setting<Boolean> onlySword = sgFilter.add(new BoolSetting.Builder()
             .name("only-sword").description("Attack only when holding a sword.").defaultValue(false).build()
     );
@@ -161,7 +155,7 @@ public class ZKillaura extends Module {
 
     float randomOnFallFloat = 0;
     float randomHitSpeedFloat = 0;
-    private int randomDelayTicks = 0; // Для рандомной задержки
+    private int randomDelayTicks = 0;
 
     private ShieldState shieldState = ShieldState.Idle;
     private int swapTimer = 0, hitTimer = 0, swapBackTimer = 0;
@@ -183,10 +177,9 @@ public class ZKillaura extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
-        if (mc.player.isDead() || mc.world == null) return;
+        if (mc.player == null || mc.world == null) return;
 
-        // НОВАЯ ПРОВЕРКА: Только меч
-        if (onlySword.get() && !(mc.player.getMainHandStack().getItem() instanceof SwordItem)) return;
+        if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
 
         HitResult hitResult = MeteoristUtils.getCrosshairTarget(mc.player, range.get(), ignoreWalls.get(), this::entityCheck);
         if (hitResult == null || hitResult.getType() != HitResult.Type.ENTITY) return;
@@ -194,11 +187,9 @@ public class ZKillaura extends Module {
         Entity entity = ((EntityHitResult) hitResult).getEntity();
         LivingEntity livingEntity = (LivingEntity) entity;
 
-        // НОВАЯ ПРОВЕРКА: Радиус и сквозь стены
         if (mc.player.distanceTo(entity) > attackRange.get()) return;
         if (!throughWalls.get() && !mc.player.canSee(entity)) return;
 
-        // ВАШ СТАРЫЙ КОД: Разбитие щита (Оставлен как был)
         if (shieldMode.get() == ShieldMode.Break) {
             if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
                 FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
@@ -242,17 +233,14 @@ public class ZKillaura extends Module {
             if (shieldState == ShieldState.Attack || shieldState == ShieldState.SwapBack) return;
         }
 
-        // НОВАЯ ПРОВЕРКА: Приоритет критов
         if (criticalMode.get() == CriticalMode.Smart) {
-            if (mc.player.fallDistance <= 0 && mc.player.isOnGround()) return; // Не бьем, пока стоим на земле
+            if (mc.player.fallDistance <= 0 && mc.player.isOnGround()) return; 
         }
 
-        // НОВАЯ ПРОВЕРКА: Ограничение скорости поворота (Bypass)
         float yawToTarget = (float) Math.toDegrees(Math.atan2(livingEntity.getZ() - mc.player.getZ(), livingEntity.getX() - mc.player.getX())) - 90f;
         float yawDiff = Math.abs(MathHelper.wrapDegrees(mc.player.getYaw() - yawToTarget));
         if (yawDiff > rotationSpeedLimit.get()) return;
 
-        // НОВАЯ ПРОВЕРКА: Рандомная задержка
         if (hitDelayRandomness.get() > 0) {
             if (randomDelayTicks > 0) {
                 randomDelayTicks--;
@@ -260,28 +248,23 @@ public class ZKillaura extends Module {
             }
         }
 
-        // ВАШ СТАРЫЙ КОД: Проверка падения
         OnFallMode currOnFallMode = onFallMode.get();
         if (currOnFallMode != OnFallMode.None) {
             float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
             if (!(mc.player.fallDistance > onFall)) return;
         }
 
-        // ВАШ СТАРЫЙ КОД: Проверка скорости удара
         HitSpeedMode currHitSpeedMode = hitSpeedMode.get();
         float hitSpeed = currHitSpeedMode == HitSpeedMode.Value ? hitSpeedValue.get().floatValue() : randomHitSpeedFloat;
         if (currHitSpeedMode != HitSpeedMode.None && (mc.player.getAttackCooldownProgress(hitSpeed) * 17.0F) < 16) return;
 
-        // АТАКА (Оставлена как была)
         mc.interactionManager.attackEntity(mc.player, livingEntity);
         if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
 
-        // НОВАЯ ФУНКЦИЯ: Если включена рандомная задержка, задаем ее после удара
         if (hitDelayRandomness.get() > 0) {
             randomDelayTicks = (int) (mc.world.random.nextFloat() * hitDelayRandomness.get());
         }
 
-        // ВАШ СТАРЫЙ КОД: Рандомизация
         if (currOnFallMode == OnFallMode.RandomValue) {
             float min = Math.min(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
             float max = Math.max(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
@@ -309,7 +292,7 @@ public class ZKillaura extends Module {
 
     private boolean entityCheck(Entity entity) {
         if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
-        if ((entity instanceof LivingEntity livingEntity && livingEntity.isDead()) || !entity.isAlive()) return false;
+        if (!entity.isAlive()) return false;
         if (!entities.get().contains(entity.getType())) return false;
         if (ignoreNamed.get() && entity.hasCustomName()) return false;
         if (ignoreTamed.get()) {
