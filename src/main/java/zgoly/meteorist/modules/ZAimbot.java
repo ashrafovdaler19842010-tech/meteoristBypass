@@ -88,7 +88,7 @@ public class ZAimbot extends Module {
             .name("speed").description("Speed of smooth aim.").defaultValue(2.0).min(0.1).sliderMax(10.0).build()
     );
     private final Setting<Double> smoothness = sgAim.add(new DoubleSetting.Builder()
-            .name("smoothness").description("How smooth the aim is (higher = smoother but slower).").defaultValue(5.0).min(1.0).sliderMax(20.0).build()
+            .name("smoothness").description("How smooth the aim is (0 = instant, higher = smoother but slower).").defaultValue(5.0).min(0.0).sliderMax(20.0).build()
     );
     
     // --- DYNAMIC POINT ---
@@ -108,11 +108,22 @@ public class ZAimbot extends Module {
             .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(2.0).min(0.0).sliderMax(10.0).build()
     );
 
+    private final Setting<Double> targetLockTime = sgAim.add(new DoubleSetting.Builder()
+            .name("target-lock-time").description("Сколько секунд удерживать фокус на цели после удара (1-10 сек).").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
+    );
+
     private final Random random = new Random();
     private int reactionTimer = 0;
-    private LivingEntity lockedTarget = null;
-    private long lockStartTime = 0;
     private Vec3d currentAimPoint = null;
+
+    // Глобальный лок для шаринга с ZKillaura
+    public static LivingEntity lockedTarget = null;
+    public static long lockedTargetTime = 0;
+
+    public static void lockTarget(LivingEntity target) {
+        lockedTarget = target;
+        lockedTargetTime = System.currentTimeMillis();
+    }
 
     public ZAimbot() {
         super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot with dynamic hitbox targeting.");
@@ -121,8 +132,8 @@ public class ZAimbot extends Module {
     @Override
     public void onActivate() {
         reactionTimer = 0;
-        lockedTarget = null;
         currentAimPoint = null;
+        lockedTarget = null;
     }
 
     @EventHandler
@@ -130,10 +141,31 @@ public class ZAimbot extends Module {
         if (mc.player == null || mc.world == null) return;
         if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
 
-        Entity target = TargetUtils.get(this::entityCheck, priority.get());
+        Entity target = null;
+        long currentTime = System.currentTimeMillis();
+
+        // Проверяем, жив ли залоченный таргет и не вышло ли время
+        if (lockedTarget != null) {
+            if (lockedTarget.isAlive() && PlayerUtils.isWithin(lockedTarget, range.get()) 
+                && (currentTime - lockedTargetTime < targetLockTime.get() * 1000)) {
+                target = lockedTarget;
+            } else {
+                lockedTarget = null;
+            }
+        }
+
+        if (target == null) {
+            target = TargetUtils.get(this::entityCheck, priority.get());
+            if (target != null) {
+                lockedTarget = (LivingEntity) target;
+                lockedTargetTime = currentTime;
+                currentAimPoint = null;
+                reactionTimer = 0;
+            }
+        }
+
         if (target == null) {
             reactionTimer = 0;
-            currentAimPoint = null;
             return;
         }
 
@@ -152,14 +184,11 @@ public class ZAimbot extends Module {
     private void aim(LivingEntity player, Entity target) {
         Box box = target.getBoundingBox();
         
-        // Обновляем точку прицеливания каждый тик (или при смене цели)
         if (currentAimPoint == null || dynamicAimPoint.get()) {
-            // Смещение от 20% до 80% высоты (исключая голову и ноги)
-            // Используем сумму двух рандомов для смещения к центру (0.5)
+            // Смещение к центру (сумма двух рандомов), от 20% до 80% высоты
             double yBias = (random.nextDouble() + random.nextDouble() - 1.0) * 0.3 + 0.5; 
             double y = box.minY + box.getLengthY() * yBias;
             
-            // Небольшой разброс по X и Z
             double x = box.minX + box.getLengthX() * (0.2 + random.nextDouble() * 0.6);
             double z = box.minZ + box.getLengthZ() * (0.2 + random.nextDouble() * 0.6);
             
@@ -173,10 +202,9 @@ public class ZAimbot extends Module {
         float pitchDifference = MathHelper.wrapDegrees(targetPitch - player.getPitch());
 
         if (onlyX.get()) {
-            pitchDifference = 0; // Игнорируем вертикаль
+            pitchDifference = 0; 
         }
 
-        // Проверка, смотрим ли мы на цель (для замедления)
         boolean lookingAtTarget = false;
         HitResult raycast = mc.player.raycast(range.get(), 0, false);
         if (raycast.getType() == HitResult.Type.ENTITY && mc.crosshairTarget != null) {
@@ -184,7 +212,11 @@ public class ZAimbot extends Module {
                     && ((EntityHitResult)mc.crosshairTarget).getEntity() == target;
         }
 
-        float speedFactor = aimSpeed.get().floatValue() / smoothness.get().floatValue();
+        // Правильная формула скорости с ползунком от 0
+        float speedFactor = aimSpeed.get().floatValue() / 100.0f;
+        if (smoothness.get() > 0) {
+            speedFactor *= (10.0f / (10.0f + smoothness.get().floatValue()));
+        }
         
         if (slowDownInHitbox.get() && lookingAtTarget) {
             speedFactor *= hitboxSlowFactor.get().floatValue(); 
@@ -193,7 +225,6 @@ public class ZAimbot extends Module {
         float deltaYaw = yawDifference * speedFactor;
         float deltaPitch = pitchDifference * speedFactor;
 
-        // GCD Fix (чтобы не палило Polar)
         float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
         float f = sensitivity * 0.6f + 0.2f;
         float gcd = f * f * f * 1.2f; 
