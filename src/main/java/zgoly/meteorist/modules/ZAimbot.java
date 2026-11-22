@@ -37,6 +37,7 @@ public class ZAimbot extends Module {
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAim = settings.createGroup("Aim");
 
+    // --- FILTER ---
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
@@ -77,6 +78,7 @@ public class ZAimbot extends Module {
             .name("priority").description("Sorting method to prioritize targets within range.").defaultValue(SortPriority.ClosestAngle).build()
     );
 
+    // --- AIM ---
     private final Setting<Boolean> smoothAim = sgAim.add(new BoolSetting.Builder()
             .name("smooth-aim").description("Enables smooth aiming.").defaultValue(true).build()
     );
@@ -93,16 +95,18 @@ public class ZAimbot extends Module {
             .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
     );
 
-    private final Setting<Double> aimSpeedVariation = sgAim.add(new DoubleSetting.Builder()
-            .name("aim-speed-variation").description("Насколько скорость аима меняется от тика к тику (AimI/AimK).").defaultValue(0.25).min(0.0).sliderMax(0.6).build()
+    // --- HUMANIZATION / SACCADIC ---
+    private final Setting<Boolean> saccadicFix = sgAim.add(new BoolSetting.Builder()
+            .name("saccadic-fix").description("Добавляет саккадические движения (кривые Безье) для обхода Shard AI.").defaultValue(true).build()
+    );
+    private final Setting<Double> saccadicOvershoot = sgAim.add(new DoubleSetting.Builder()
+            .name("saccadic-overshoot").description("Насколько сильно прицел перелетает цель (1.0 - 1.3).").defaultValue(1.15).min(1.0).sliderMax(1.4).visible(saccadicFix::get).build()
     );
     private final Setting<Double> microJitter = sgAim.add(new DoubleSetting.Builder()
             .name("micro-jitter").description("Микро-дрожание руки.").defaultValue(0.04).min(0.0).sliderMax(0.2).build()
     );
-    private final Setting<Boolean> saccadicFix = sgAim.add(new BoolSetting.Builder()
-            .name("saccadic-fix").description("Добавляет саккадические движения (микро-рывки) для обхода Shard AI.").defaultValue(true).build()
-    );
 
+    // --- TARGET LOCK & POINT ---
     private final Setting<Double> targetLockTime = sgAim.add(new DoubleSetting.Builder()
             .name("target-lock-time").description("Сколько секунд удерживать фокус на одной цели (1-10 сек).").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
     );
@@ -113,6 +117,7 @@ public class ZAimbot extends Module {
             .name("slow-down-in-hitbox").description("Замедляет наводку, когда прицел уже внутри хитбокса.").defaultValue(true).build()
     );
 
+    // --- AUTO CONFIG ---
     private final Setting<AutoConfig> autoConfigMode = sgAim.add(new EnumSetting.Builder<AutoConfig>()
             .name("auto-config").description("Автоматически подбирает настройки под античит.").defaultValue(AutoConfig.None).build()
     );
@@ -122,9 +127,14 @@ public class ZAimbot extends Module {
     private LivingEntity lockedTarget = null;
     private long lockStartTime = 0;
     private Vec3d currentAimPoint = null;
+    
+    // Переменные для саккадической наводки
+    private float saccadeProgress = 0.0f;
+    private float saccadeStartYaw = 0.0f;
+    private float saccadeStartPitch = 0.0f;
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with humanization, target lock and AC bypass.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with saccadic movement and AC bypass.");
     }
 
     @Override
@@ -132,6 +142,7 @@ public class ZAimbot extends Module {
         reactionTimer = 0;
         lockedTarget = null;
         currentAimPoint = null;
+        saccadeProgress = 0.0f;
         applyAutoConfig();
     }
 
@@ -159,6 +170,9 @@ public class ZAimbot extends Module {
                 lockStartTime = currentTime;
                 currentAimPoint = null;
                 reactionTimer = 0;
+                saccadeProgress = 0.0f;
+                saccadeStartYaw = mc.player.getYaw();
+                saccadeStartPitch = mc.player.getPitch();
             }
         }
 
@@ -191,13 +205,57 @@ public class ZAimbot extends Module {
         float targetYaw = (float) Rotations.getYaw(currentAimPoint);
         float targetPitch = (float) Rotations.getPitch(currentAimPoint);
 
+        // --- ЛОГИКА САККАДИЧЕСКОГО ДВИЖЕНИЯ (SHARD BYPASS) ---
+        if (saccadicFix.get()) {
+            saccadeProgress += 0.15f + (random.nextFloat() * 0.1f); // Скорость прогресса
+            if (saccadeProgress > 1.0f) saccadeProgress = 1.0f;
+
+            // Кубическая кривая Безье: от стартовой точки через "перелет" к цели
+            float p0Yaw = saccadeStartYaw;
+            float p0Pitch = saccadeStartPitch;
+            
+            float deltaYaw = MathHelper.wrapDegrees(targetYaw - p0Yaw);
+            float deltaPitch = MathHelper.wrapDegrees(targetPitch - p0Pitch);
+
+            // Точка перерегулирования (overshoot) - пролетаем чуть дальше цели
+            float overshoot = (float) (saccadicOvershoot.get() + (random.nextFloat() - 0.5) * 0.1);
+            float p1Yaw = p0Yaw + deltaYaw * overshoot;
+            float p1Pitch = p0Pitch + deltaPitch * overshoot;
+
+            // Точка возврата (чуть ближе к цели)
+            float p2Yaw = targetYaw - deltaYaw * 0.05f;
+            float p2Pitch = targetPitch - deltaPitch * 0.05f;
+            
+            float p3Yaw = targetYaw;
+            float p3Pitch = targetPitch;
+
+            // Формула Безье
+            float t = saccadeProgress;
+            float u = 1 - t;
+            float tt = t * t;
+            float uu = u * u;
+            float uuu = uu * u;
+            float ttt = tt * t;
+
+            float calcYaw = uuu * p0Yaw + 3 * uu * t * p1Yaw + 3 * u * tt * p2Yaw + ttt * p3Yaw;
+            float calcPitch = uuu * p0Pitch + 3 * uu * t * p1Pitch + 3 * u * tt * p2Pitch + ttt * p3Pitch;
+
+            // Добавляем микро-тремор при завершении движения
+            if (t > 0.85f) {
+                calcYaw += (random.nextFloat() - 0.5f) * 0.5f;
+                calcPitch += (random.nextFloat() - 0.5f) * 0.5f;
+            }
+
+            player.setYaw(normalizeToGCD(calcYaw));
+            player.setPitch(MathHelper.clamp(normalizeToGCD(calcPitch), -90f, 90f));
+            
+            return; // Выходим, так как Безье полностью управляет углами
+        }
+
+        // --- СТАРАЯ ЛОГИКА (Плавная наводка / Smooth) ---
         if (microJitter.get() > 0) {
             targetYaw += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
             targetPitch += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
-        }
-        if (saccadicFix.get() && random.nextFloat() < 0.15f) {
-            targetYaw += (float) ((random.nextDouble() - 0.5) * 4.0f);
-            targetPitch += (float) ((random.nextDouble() - 0.5) * 2.0f);
         }
 
         float yawDifference = MathHelper.wrapDegrees(targetYaw - player.getYaw());
@@ -210,13 +268,11 @@ public class ZAimbot extends Module {
                     && ((EntityHitResult)mc.crosshairTarget).getEntity() == target;
         }
 
-        float speedFactor = aimSpeed.get().floatValue() / 10.0f;
+        float speedFactor = smoothAim.get() ? aimSpeed.get().floatValue() / 10.0f : 0.5f;
         
         if (slowDownInHitbox.get() && lookingAtTarget) {
             speedFactor *= 0.3f; 
         }
-
-        speedFactor *= 1.0f + (float) (random.nextDouble() - 0.5) * 2.0f * aimSpeedVariation.get().floatValue();
 
         float deltaYaw = yawDifference * speedFactor;
         float deltaPitch = pitchDifference * speedFactor;
@@ -243,7 +299,6 @@ public class ZAimbot extends Module {
             case Polar -> {
                 gcdFix.set(true);
                 maxRotationPerTick.set(30.0);
-                aimSpeedVariation.set(0.2);
                 microJitter.set(0.03);
                 saccadicFix.set(false);
                 randomAimPoint.set(true);
@@ -256,9 +311,9 @@ public class ZAimbot extends Module {
             case Shard -> {
                 gcdFix.set(true);
                 maxRotationPerTick.set(45.0);
-                aimSpeedVariation.set(0.4);
                 microJitter.set(0.06);
-                saccadicFix.set(true);
+                saccadicFix.set(true); // Включаем Безье для Shard
+                saccadicOvershoot.set(1.2);
                 randomAimPoint.set(true);
                 slowDownInHitbox.set(true);
                 reactionTime.set(4.0);
@@ -268,6 +323,15 @@ public class ZAimbot extends Module {
             }
             case None -> {}
         }
+    }
+
+    private float normalizeToGCD(float angle) {
+        if (!gcdFix.get()) return angle;
+        float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
+        float gcd = sensitivity * 0.6f + 0.2f;
+        float step = gcd * gcd * gcd * 1.2f;
+        if (step <= 0) return angle;
+        return Math.round(angle / step) * step;
     }
 
     private boolean entityCheck(Entity entity) {
