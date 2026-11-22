@@ -114,6 +114,20 @@ public class ZAimbot extends Module {
             .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(0.0).min(0.0).sliderMax(10.0).build()
     );
 
+    // --- НОВЫЕ НАСТРОЙКИ ДЛЯ ОБХОДА POLAR / SHARD ---
+    private final Setting<Boolean> gcdFix = sgAim.add(new BoolSetting.Builder()
+            .name("gcd-fix").description("Нормализует углы под GCD мыши (обходит Polar AimQ/AimU).").defaultValue(true).build()
+    );
+    private final Setting<Double> maxRotationPerTick = sgAim.add(new DoubleSetting.Builder()
+            .name("max-rotation-per-tick").description("Максимальный поворот за тик в градусах (обходит AimM/AimP).").defaultValue(35.0).min(5.0).sliderMax(180.0).build()
+    );
+    private final Setting<Double> aimSpeedVariation = sgAim.add(new DoubleSetting.Builder()
+            .name("aim-speed-variation").description("Насколько скорость аима меняется от тика к тику (AimI/AimK).").defaultValue(0.25).min(0.0).sliderMax(0.6).build()
+    );
+    private final Setting<Double> microJitter = sgAim.add(new DoubleSetting.Builder()
+            .name("micro-jitter").description("Микро-дрожание руки (не синусоида, а человеческий шум).").defaultValue(0.04).min(0.0).sliderMax(0.2).build()
+    );
+
     private final Random random = new Random();
     private double shakePhase = 0;
     private int reactionTimer = 0;
@@ -195,13 +209,17 @@ public class ZAimbot extends Module {
         float targetYaw = (float) Rotations.getYaw(aimPos);
         float targetPitch = (float) Rotations.getPitch(target, bodyTarget.get());
 
+        // 1. Человеческий шум
+        if (microJitter.get() > 0) {
+            targetYaw += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
+            targetPitch += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
+        }
         if (shakeIntensity.get() > 0) {
             shakePhase += shakeSpeed.get() * 0.1;
             if (shakePhase > Math.PI * 2) shakePhase -= Math.PI * 2;
             targetYaw += (float) (Math.sin(shakePhase) * shakeIntensity.get());
             targetPitch += (float) (Math.cos(shakePhase * 1.3) * shakeIntensity.get());
         }
-
         if (aimJitterAmplitude.get() > 0) {
             targetYaw += (float) ((random.nextDouble() - 0.5) * 2 * aimJitterAmplitude.get());
             targetPitch += (float) ((random.nextDouble() - 0.5) * 2 * aimJitterAmplitude.get());
@@ -211,16 +229,47 @@ public class ZAimbot extends Module {
         float pitchDifference = MathHelper.wrapDegrees(targetPitch - player.getPitch());
 
         if (instantAim.get()) {
-            player.setYaw(targetYaw);
-            player.setPitch(targetPitch);
+            player.setYaw(normalizeToGCD(targetYaw));
+            player.setPitch(MathHelper.clamp(normalizeToGCD(targetPitch), -90f, 90f));
         } else if (smoothAim.get()) {
+            float speedFactor = 1.0f + (float) (random.nextDouble() - 0.5) * 2.0f * aimSpeedVariation.get().floatValue();
             float cooldownProgress = syncSpeedWithCooldown.get() ? mc.player.getAttackCooldownProgress(0) : 1;
-            player.setYaw(player.getYaw() + yawDifference * cooldownProgress * aimSpeed.get().floatValue() / 10);
-            player.setPitch(player.getPitch() + pitchDifference * cooldownProgress * aimSpeed.get().floatValue() / 10);
+            float deltaYaw = yawDifference * cooldownProgress * (aimSpeed.get().floatValue() / 10) * speedFactor;
+            float deltaPitch = pitchDifference * cooldownProgress * (aimSpeed.get().floatValue() / 10) * speedFactor;
+            
+            // Защита от резких дерганий Polar (AimM / AimP)
+            deltaYaw = clampAngleDelta(deltaYaw, maxRotationPerTick.get().floatValue());
+            deltaPitch = clampAngleDelta(deltaPitch, maxRotationPerTick.get().floatValue());
+            
+            player.setYaw(normalizeToGCD(player.getYaw() + deltaYaw));
+            player.setPitch(MathHelper.clamp(normalizeToGCD(player.getPitch() + deltaPitch), -90f, 90f));
         } else {
             float cooldownProgress = syncSpeedWithCooldown.get() ? mc.player.getAttackCooldownProgress(0) : 1;
-            player.setYaw(player.getYaw() + yawDifference * cooldownProgress * speed.get().floatValue() / 10);
-            player.setPitch(player.getPitch() + pitchDifference * cooldownProgress * speed.get().floatValue() / 10);
+            float deltaYaw = yawDifference * cooldownProgress * (speed.get().floatValue() / 10);
+            float deltaPitch = pitchDifference * cooldownProgress * (speed.get().floatValue() / 10);
+            
+            deltaYaw = clampAngleDelta(deltaYaw, maxRotationPerTick.get().floatValue());
+            deltaPitch = clampAngleDelta(deltaPitch, maxRotationPerTick.get().floatValue());
+            
+            player.setYaw(normalizeToGCD(player.getYaw() + deltaYaw));
+            player.setPitch(MathHelper.clamp(normalizeToGCD(player.getPitch() + deltaPitch), -90f, 90f));
         }
+    }
+
+    // --- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ОБХОДА ---
+    private float normalizeToGCD(float angle) {
+        if (!gcdFix.get()) return angle;
+        float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
+        float gcd = sensitivity * 0.6f + 0.2f;
+        float step = gcd * gcd * gcd * 1.2f;
+        if (step <= 0) return angle;
+        return Math.round(angle / step) * step;
+    }
+
+    private float clampAngleDelta(float delta, float maxDelta) {
+        if (Math.abs(delta) > maxDelta) {
+            return Math.signum(delta) * maxDelta;
+        }
+        return delta;
     }
 }
