@@ -19,6 +19,7 @@ import net.minecraft.entity.mob.ZombifiedPiglinEntity;
 import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Box;
@@ -32,8 +33,6 @@ import java.util.Set;
 import static zgoly.meteorist.utils.MeteoristUtils.calculateFov;
 
 public class ZAimbot extends Module {
-    public enum AutoConfig { None, Polar, Shard }
-
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAim = settings.createGroup("Aim");
 
@@ -78,49 +77,35 @@ public class ZAimbot extends Module {
             .name("priority").description("Sorting method to prioritize targets within range.").defaultValue(SortPriority.ClosestAngle).build()
     );
 
-    // --- AIM BASE ---
+    // --- AIM ---
+    private final Setting<Boolean> onlySword = sgAim.add(new BoolSetting.Builder()
+            .name("only-sword").description("Aim only when holding a sword.").defaultValue(false).build()
+    );
+    private final Setting<Boolean> onlyX = sgAim.add(new BoolSetting.Builder()
+            .name("only-x-coordinate").description("Aim only horizontally (ignore vertical pitch).").defaultValue(false).build()
+    );
     private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
-            .name("aim-speed").description("Base speed of aim.").defaultValue(2.0).min(0.1).sliderMax(10.0).build()
+            .name("speed").description("Speed of smooth aim.").defaultValue(2.0).min(0.1).sliderMax(10.0).build()
     );
-    private final Setting<Double> maxRotationPerTick = sgAim.add(new DoubleSetting.Builder()
-            .name("max-rotation-per-tick").description("Максимальный поворот за тик в градусах.").defaultValue(35.0).min(5.0).sliderMax(180.0).build()
+    private final Setting<Double> smoothness = sgAim.add(new DoubleSetting.Builder()
+            .name("smoothness").description("How smooth the aim is (higher = smoother but slower).").defaultValue(5.0).min(1.0).sliderMax(20.0).build()
     );
-    private final Setting<Boolean> gcdFix = sgAim.add(new BoolSetting.Builder()
-            .name("gcd-fix").description("Нормализует углы под GCD мыши.").defaultValue(true).build()
-    );
-    private final Setting<Double> reactionTime = sgAim.add(new DoubleSetting.Builder()
-            .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
-    );
-
-    // --- THREE ROTATION MODES ---
-    private final Setting<Boolean> smoothRotation = sgAim.add(new BoolSetting.Builder()
-            .name("smooth-rotation (Legit)").description("Классическая плавная наводка без шума.").defaultValue(true).build()
-    );
-    private final Setting<Boolean> neuroRotation = sgAim.add(new BoolSetting.Builder()
-            .name("neuro-rotation (Shard)").description("Шум Орнштейна-Уленбека + случайные паузы. Рекомендуется для Shard AC.").defaultValue(false).build()
-    );
-    private final Setting<Boolean> ouNoiseRotation = sgAim.add(new BoolSetting.Builder()
-            .name("ou-noise-rotation (Advanced)").description("Агрессивный коррелированный шум с имитацией задержки ввода.").defaultValue(false).build()
+    
+    // --- DYNAMIC POINT ---
+    private final Setting<Boolean> dynamicAimPoint = sgAim.add(new BoolSetting.Builder()
+            .name("dynamic-aim-point").description("Aims at different spots (biased to center) after each hit.").defaultValue(true).build()
     );
 
-    // --- HUMANIZATION ---
-    private final Setting<Double> microJitter = sgAim.add(new DoubleSetting.Builder()
-            .name("micro-jitter").description("Микро-дрожание руки (базовое).").defaultValue(0.04).min(0.0).sliderMax(0.2).build()
-    );
-
-    // --- TARGET LOCK & POINT ---
-    private final Setting<Double> targetLockTime = sgAim.add(new DoubleSetting.Builder()
-            .name("target-lock-time").description("Сколько секунд удерживать фокус на одной цели (1-10 сек).").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
-    );
-    private final Setting<Boolean> randomAimPoint = sgAim.add(new BoolSetting.Builder()
-            .name("random-aim-point").description("Рандомит точку прицеливания (от поножей до шеи).").defaultValue(true).build()
-    );
+    // --- HITBOX SLOWDOWN ---
     private final Setting<Boolean> slowDownInHitbox = sgAim.add(new BoolSetting.Builder()
-            .name("slow-down-in-hitbox").description("Замедляет наводку, когда прицел уже внутри хитбокса.").defaultValue(true).build()
+            .name("slow-down-in-hitbox").description("Slows down aim when crosshair is on target.").defaultValue(true).build()
+    );
+    private final Setting<Double> hitboxSlowFactor = sgAim.add(new DoubleSetting.Builder()
+            .name("hitbox-slow-factor").description("Multiplier for aim speed inside hitbox (0.1 - 1.0).").defaultValue(0.3).min(0.1).sliderMax(1.0).visible(slowDownInHitbox::get).build()
     );
 
-    private final Setting<AutoConfig> autoConfigMode = sgAim.add(new EnumSetting.Builder<AutoConfig>()
-            .name("auto-config").description("Автоматически подбирает настройки под античит.").defaultValue(AutoConfig.None).build()
+    private final Setting<Double> reactionTime = sgAim.add(new DoubleSetting.Builder()
+            .name("reaction-time").description("Delay (in ticks) before aiming at a new target.").defaultValue(2.0).min(0.0).sliderMax(10.0).build()
     );
 
     private final Random random = new Random();
@@ -129,14 +114,8 @@ public class ZAimbot extends Module {
     private long lockStartTime = 0;
     private Vec3d currentAimPoint = null;
 
-    // Состояние для шума Орнштейна-Уленбека (OU)
-    private float ouYaw = 0.0f;
-    private float ouPitch = 0.0f;
-    private long lastNoiseUpdate = 0;
-    private long nextMicroPause = 0;
-
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with three rotation modes for AC bypass.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot with dynamic hitbox targeting.");
     }
 
     @Override
@@ -144,64 +123,47 @@ public class ZAimbot extends Module {
         reactionTimer = 0;
         lockedTarget = null;
         currentAimPoint = null;
-        ouYaw = 0.0f;
-        ouPitch = 0.0f;
-        applyAutoConfig();
     }
 
     @EventHandler
     private void onRender3D(Render3DEvent event) {
         if (mc.player == null || mc.world == null) return;
+        if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
 
-        long currentTime = System.currentTimeMillis();
-
-        if (lockedTarget != null) {
-            boolean lostTarget = !lockedTarget.isAlive() 
-                    || !PlayerUtils.isWithin(lockedTarget, range.get()) 
-                    || (currentTime - lockStartTime > targetLockTime.get() * 1000);
-            
-            if (lostTarget) {
-                lockedTarget = null;
-                currentAimPoint = null;
-            }
+        Entity target = TargetUtils.get(this::entityCheck, priority.get());
+        if (target == null) {
+            reactionTimer = 0;
+            currentAimPoint = null;
+            return;
         }
-
-        if (lockedTarget == null) {
-            Entity target = TargetUtils.get(this::entityCheck, priority.get());
-            if (target instanceof LivingEntity living) {
-                lockedTarget = living;
-                lockStartTime = currentTime;
-                currentAimPoint = null;
-                reactionTimer = 0;
-                ouYaw = 0.0f;
-                ouPitch = 0.0f;
-            }
-        }
-
-        if (lockedTarget == null) return;
 
         if (reactionTime.get() > 0) {
             if (reactionTimer < reactionTime.get().intValue()) {
                 reactionTimer++;
                 return;
             }
+        } else {
+            reactionTimer = 0;
         }
 
-        aim(mc.player, lockedTarget);
+        aim(mc.player, target);
     }
 
-    private void aim(LivingEntity player, LivingEntity target) {
+    private void aim(LivingEntity player, Entity target) {
         Box box = target.getBoundingBox();
         
-        if (randomAimPoint.get()) {
-            if (currentAimPoint == null || random.nextInt(10) < 3) {
-                double y = box.minY + box.getLengthY() * (0.2 + random.nextDouble() * 0.6);
-                double x = box.minX + box.getLengthX() * (0.3 + random.nextDouble() * 0.4);
-                double z = box.minZ + box.getLengthZ() * (0.3 + random.nextDouble() * 0.4);
-                currentAimPoint = new Vec3d(x, y, z);
-            }
-        } else {
-            currentAimPoint = target.getPos().add(0, target.getHeight() / 2.0, 0);
+        // Обновляем точку прицеливания каждый тик (или при смене цели)
+        if (currentAimPoint == null || dynamicAimPoint.get()) {
+            // Смещение от 20% до 80% высоты (исключая голову и ноги)
+            // Используем сумму двух рандомов для смещения к центру (0.5)
+            double yBias = (random.nextDouble() + random.nextDouble() - 1.0) * 0.3 + 0.5; 
+            double y = box.minY + box.getLengthY() * yBias;
+            
+            // Небольшой разброс по X и Z
+            double x = box.minX + box.getLengthX() * (0.2 + random.nextDouble() * 0.6);
+            double z = box.minZ + box.getLengthZ() * (0.2 + random.nextDouble() * 0.6);
+            
+            currentAimPoint = new Vec3d(x, y, z);
         }
 
         float targetYaw = (float) Rotations.getYaw(currentAimPoint);
@@ -210,6 +172,11 @@ public class ZAimbot extends Module {
         float yawDifference = MathHelper.wrapDegrees(targetYaw - player.getYaw());
         float pitchDifference = MathHelper.wrapDegrees(targetPitch - player.getPitch());
 
+        if (onlyX.get()) {
+            pitchDifference = 0; // Игнорируем вертикаль
+        }
+
+        // Проверка, смотрим ли мы на цель (для замедления)
         boolean lookingAtTarget = false;
         HitResult raycast = mc.player.raycast(range.get(), 0, false);
         if (raycast.getType() == HitResult.Type.ENTITY && mc.crosshairTarget != null) {
@@ -217,141 +184,25 @@ public class ZAimbot extends Module {
                     && ((EntityHitResult)mc.crosshairTarget).getEntity() == target;
         }
 
-        float speedFactor = aimSpeed.get().floatValue() / 10.0f;
+        float speedFactor = aimSpeed.get().floatValue() / smoothness.get().floatValue();
+        
         if (slowDownInHitbox.get() && lookingAtTarget) {
-            speedFactor *= 0.3f; 
+            speedFactor *= hitboxSlowFactor.get().floatValue(); 
         }
 
         float deltaYaw = yawDifference * speedFactor;
         float deltaPitch = pitchDifference * speedFactor;
 
-        float maxRot = maxRotationPerTick.get().floatValue();
-        deltaYaw = MathHelper.clamp(deltaYaw, -maxRot, maxRot);
-        deltaPitch = MathHelper.clamp(deltaPitch, -maxRot, maxRot);
-
-        // --- APPLY ROTATION MODES ---
-        if (neuroRotation.get()) {
-            applyNeuroNoise(player, deltaYaw, deltaPitch);
-            return;
-        } else if (ouNoiseRotation.get()) {
-            applyOuNoise(player, deltaYaw, deltaPitch);
-            return;
-        }
-
-        // --- DEFAULT SMOOTH (LEGIT) ---
-        if (microJitter.get() > 0) {
-            deltaYaw += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
-            deltaPitch += (float) ((random.nextDouble() - 0.5) * 2 * microJitter.get());
-        }
-
-        if (gcdFix.get()) {
-            deltaYaw = normalizeToGCD(deltaYaw);
-            deltaPitch = normalizeToGCD(deltaPitch);
-        }
+        // GCD Fix (чтобы не палило Polar)
+        float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
+        float f = sensitivity * 0.6f + 0.2f;
+        float gcd = f * f * f * 1.2f; 
+        
+        deltaYaw = Math.round(deltaYaw / gcd) * gcd;
+        deltaPitch = Math.round(deltaPitch / gcd) * gcd;
 
         player.setYaw(player.getYaw() + deltaYaw);
         player.setPitch(MathHelper.clamp(player.getPitch() + deltaPitch, -90f, 90f));
-    }
-
-    private void applyNeuroNoise(LivingEntity player, float baseDeltaYaw, float baseDeltaPitch) {
-        long now = System.currentTimeMillis();
-        
-        // "Дышащий" шум Орнштейна-Уленбека (медленно меняющийся)
-        if (now - lastNoiseUpdate > 20) { // обновляем каждые 20 мс
-            float theta = 0.15f; // скорость возврата к среднему
-            float sigma = 0.5f;  // волатильность
-            
-            ouYaw += theta * (0.0f - ouYaw) + sigma * (float) random.nextGaussian();
-            ouPitch += theta * (0.0f - ouPitch) + sigma * (float) random.nextGaussian();
-            lastNoiseUpdate = now;
-        }
-
-        // Случайные микро-паузы (имитация усталости/коррекции)
-        if (now > nextMicroPause) {
-            if (random.nextFloat() < 0.05f) { // 5% шанс паузы
-                nextMicroPause = now + 50 + random.nextInt(100); // пауза 50-150 мс
-                return; // Пропускаем кадр (рука "замерла")
-            }
-        } else {
-            return; // Мы на паузе
-        }
-
-        float finalYaw = baseDeltaYaw + ouYaw * 0.3f;
-        float finalPitch = baseDeltaPitch + ouPitch * 0.3f;
-
-        // Добавляем немного высокочастотного шума
-        finalYaw += (float) ((random.nextDouble() - 0.5) * 0.1);
-        finalPitch += (float) ((random.nextDouble() - 0.5) * 0.1);
-
-        if (gcdFix.get()) {
-            finalYaw = normalizeToGCD(finalYaw);
-            finalPitch = normalizeToGCD(finalPitch);
-        }
-
-        player.setYaw(player.getYaw() + finalYaw);
-        player.setPitch(MathHelper.clamp(player.getPitch() + finalPitch, -90f, 90f));
-    }
-
-    private void applyOuNoise(LivingEntity player, float baseDeltaYaw, float baseDeltaPitch) {
-        // Более агрессивный OU-шум с имитацией задержки ввода
-        long now = System.currentTimeMillis();
-        
-        float theta = 0.05f; // очень медленный возврат
-        float sigma = 0.8f;  // высокая волатильность
-        
-        ouYaw += theta * (0.0f - ouYaw) + sigma * (float) random.nextGaussian();
-        ouPitch += theta * (0.0f - ouPitch) + sigma * (float) random.nextGaussian();
-
-        // Задержка ввода (10-40 мс) - иногда пропускаем обновление
-        if (random.nextFloat() < 0.1f) { // 10% шанс "лага" ввода
-            return;
-        }
-
-        float finalYaw = baseDeltaYaw + ouYaw * 0.5f;
-        float finalPitch = baseDeltaPitch + ouPitch * 0.5f;
-
-        if (gcdFix.get()) {
-            finalYaw = normalizeToGCD(finalYaw);
-            finalPitch = normalizeToGCD(finalPitch);
-        }
-
-        player.setYaw(player.getYaw() + finalYaw);
-        player.setPitch(MathHelper.clamp(player.getPitch() + finalPitch, -90f, 90f));
-    }
-
-    private void applyAutoConfig() {
-        switch (autoConfigMode.get()) {
-            case Polar -> {
-                gcdFix.set(true);
-                maxRotationPerTick.set(30.0);
-                microJitter.set(0.03);
-                smoothRotation.set(true);
-                neuroRotation.set(false);
-                ouNoiseRotation.set(false);
-                reactionTime.set(2.0);
-                aimSpeed.set(2.5);
-            }
-            case Shard -> {
-                gcdFix.set(true);
-                maxRotationPerTick.set(45.0);
-                microJitter.set(0.06);
-                smoothRotation.set(false);
-                neuroRotation.set(true); // Включаем Neuro для Shard
-                ouNoiseRotation.set(false);
-                reactionTime.set(4.0);
-                aimSpeed.set(2.0);
-            }
-            case None -> {}
-        }
-    }
-
-    private float normalizeToGCD(float angle) {
-        if (!gcdFix.get()) return angle;
-        float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
-        float gcd = sensitivity * 0.6f + 0.2f;
-        float step = gcd * gcd * gcd * 1.2f;
-        if (step <= 0) return angle;
-        return Math.round(angle / step) * step;
     }
 
     private boolean entityCheck(Entity entity) {
