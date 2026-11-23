@@ -1,6 +1,7 @@
 package zgoly.meteorist.modules;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
+import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
@@ -20,12 +21,13 @@ import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import zgoly.meteorist.Meteorist;
+import zgoly.meteorist.utils.MeteoristUtils;
 
 import java.util.Random;
 import java.util.Set;
@@ -33,19 +35,24 @@ import java.util.Set;
 import static zgoly.meteorist.utils.MeteoristUtils.calculateFov;
 
 public class ZAimbot extends Module {
-    private final SettingGroup sgFilter = settings.createGroup("Filter");
+    private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgAim = settings.createGroup("Aim");
+    private final SettingGroup sgMovement = settings.createGroup("Movement");
 
-    private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
+    // --- FILTER ---
+    private final Setting<Set<EntityType<?>>> entities = sgGeneral.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
-    private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
+    private final Setting<Double> range = sgGeneral.add(new DoubleSetting.Builder()
             .name("range").description("The maximum range the entity can be to aim at it.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
-    private final Setting<Boolean> ignoreFriends = sgFilter.add(new BoolSetting.Builder()
+    private final Setting<Double> fov = sgGeneral.add(new DoubleSetting.Builder()
+            .name("fov").description("Field of view to target entities.").defaultValue(90).min(10).sliderMax(360).build()
+    );
+    private final Setting<Boolean> ignoreFriends = sgGeneral.add(new BoolSetting.Builder()
             .name("ignore-friends").description("Will avoid aiming at players on your friends list.").defaultValue(true).build()
     );
-    private final Setting<Boolean> ignoreWalls = sgFilter.add(new BoolSetting.Builder()
+    private final Setting<Boolean> ignoreWalls = sgGeneral.add(new BoolSetting.Builder()
             .name("ignore-walls").description("Allow aiming through walls.").defaultValue(false).build()
     );
 
@@ -59,15 +66,38 @@ public class ZAimbot extends Module {
     private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
             .name("speed").description("Speed of smooth aim.").defaultValue(3.0).min(0.1).sliderMax(10.0).build()
     );
-    private final Setting<Boolean> dynamicAimPoint = sgAim.add(new BoolSetting.Builder()
-            .name("dynamic-aim-point").description("Aims at different spots (biased to center).").defaultValue(true).build()
+    private final Setting<Boolean> smoothAim = sgAim.add(new BoolSetting.Builder()
+            .name("smooth-aim").description("Enables smooth aiming.").defaultValue(true).build()
+    );
+    private final Setting<Boolean> randomizeTarget = sgAim.add(new BoolSetting.Builder()
+            .name("randomize-target").description("Randomizes the exact aim point on the hitbox.").defaultValue(true).build()
+    );
+    private final Setting<Boolean> predictMovement = sgAim.add(new BoolSetting.Builder()
+            .name("predict-movement").description("Predicts target movement.").defaultValue(false).build()
+    );
+    private final Setting<Double> predictionFactor = sgAim.add(new DoubleSetting.Builder()
+            .name("prediction-factor").description("How much to predict movement.").defaultValue(0.5).min(0.0).sliderMax(2.0).visible(predictMovement::get).build()
     );
     private final Setting<Double> targetLockTime = sgAim.add(new DoubleSetting.Builder()
-            .name("target-lock-time").description("Сколько секунд удерживать фокус на цели после удара.").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
+            .name("target-lock-time").description("Сколько секунд удерживать фокус на цели.").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
+    );
+
+    // --- MOVEMENT (SPRINT) ---
+    private final Setting<Boolean> autoSprint = sgMovement.add(new BoolSetting.Builder()
+            .name("auto-sprint").description("Автоматически зажимает спринт.").defaultValue(true).build()
+    );
+    private final Setting<Boolean> wTap = sgMovement.add(new BoolSetting.Builder()
+            .name("w-tap").description("Сброс спринта перед ударом (работает даже с выключенным триггером).").defaultValue(true).build()
+    );
+    private final Setting<Integer> wTapMs = sgMovement.add(new IntSetting.Builder()
+            .name("w-tap-ms").description("Задержка сброса спринта в миллисекундах (1-50 мс).").defaultValue(30).sliderRange(1, 50).visible(wTap::get).build()
     );
 
     private final Random random = new Random();
     private Vec3d currentAimPoint = null;
+    private boolean isWTapPending = false;
+    private long wTapEndTime = 0;
+    private LivingEntity pendingWTapTarget = null;
 
     // Шарим лок с ZKillaura
     public static LivingEntity lockedTarget = null;
@@ -79,26 +109,55 @@ public class ZAimbot extends Module {
     }
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot with sprint control.");
     }
 
     @Override
     public void onActivate() {
         currentAimPoint = null;
         lockedTarget = null;
+        isWTapPending = false;
+        pendingWTapTarget = null;
+    }
+
+    @EventHandler
+    private void onTick(TickEvent.Pre event) {
+        if (mc.player == null || mc.world == null) return;
+
+        // 1. Обработка W-Tap (даже если триггер выключен)
+        if (isWTapPending) {
+            if (System.currentTimeMillis() >= wTapEndTime) {
+                if (pendingWTapTarget != null && mc.world.getEntityById(pendingWTapTarget.getId()) != null) {
+                    mc.interactionManager.attackEntity(mc.player, pendingWTapTarget);
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                    lockTarget(pendingWTapTarget);
+                }
+                mc.options.sprintKey.setPressed(true);
+                mc.player.setSprinting(true);
+                isWTapPending = false;
+                pendingWTapTarget = null;
+            }
+            return;
+        }
+
+        // 2. Автоспринт
+        if (autoSprint.get() && mc.player.isOnGround() && mc.player.input.hasForwardMovement() && !mc.player.isUsingItem()) {
+            mc.player.setSprinting(true);
+        }
     }
 
     @EventHandler
     private void onRender3D(Render3DEvent event) {
         if (mc.player == null || mc.world == null) return;
         if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
+        if (isWTapPending) return; // Не целимся во время W-Tap задержки
 
         Entity target = null;
         long currentTime = System.currentTimeMillis();
 
-        // Проверяем лок
         if (lockedTarget != null) {
             if (lockedTarget.isAlive() && PlayerUtils.isWithin(lockedTarget, range.get()) 
+                && calculateFov(mc.player, lockedTarget) <= fov.get()
                 && (currentTime - lockedTargetTime < targetLockTime.get() * 1000)) {
                 target = lockedTarget;
             } else {
@@ -106,7 +165,6 @@ public class ZAimbot extends Module {
             }
         }
 
-        // Ищем нового, если лока нет
         if (target == null) {
             target = TargetUtils.get(this::entityCheck, SortPriority.ClosestAngle);
             if (target != null) {
@@ -122,14 +180,19 @@ public class ZAimbot extends Module {
     }
 
     private void aim(LivingEntity player, Entity target) {
-        Box box = target.getBoundingBox();
-        
-        if (currentAimPoint == null || dynamicAimPoint.get()) {
-            // Смещение к центру (сумма двух рандомов), от 20% до 80% высоты
+        if (currentAimPoint == null || randomizeTarget.get()) {
             double yBias = (random.nextDouble() + random.nextDouble() - 1.0) * 0.3 + 0.5; 
-            double y = box.minY + box.getLengthY() * yBias;
-            double x = box.minX + box.getLengthX() * (0.2 + random.nextDouble() * 0.6);
-            double z = box.minZ + box.getLengthZ() * (0.2 + random.nextDouble() * 0.6);
+            double y = target.getY() + target.getHeight() * yBias;
+            double x = target.getX() + (random.nextDouble() - 0.5) * 0.3;
+            double z = target.getZ() + (random.nextDouble() - 0.5) * 0.3;
+            
+            if (predictMovement.get()) {
+                Vec3d vel = target.getVelocity();
+                x += vel.x * predictionFactor.get();
+                y += vel.y * predictionFactor.get();
+                z += vel.z * predictionFactor.get();
+            }
+            
             currentAimPoint = new Vec3d(x, y, z);
         }
 
@@ -141,20 +204,38 @@ public class ZAimbot extends Module {
 
         if (onlyX.get()) pitchDifference = 0;
 
-        float speedFactor = aimSpeed.get().floatValue() / 10.0f;
-        
-        float deltaYaw = yawDifference * speedFactor;
-        float deltaPitch = pitchDifference * speedFactor;
+        if (smoothAim.get()) {
+            float speedFactor = aimSpeed.get().floatValue() / 10.0f;
+            float deltaYaw = yawDifference * speedFactor;
+            float deltaPitch = pitchDifference * speedFactor;
+            
+            float sens = mc.options.getMouseSensitivity().getValue().floatValue();
+            float f = sens * 0.6f + 0.2f;
+            float gcd = f * f * f * 1.2f; 
+            deltaYaw = Math.round(deltaYaw / gcd) * gcd;
+            deltaPitch = Math.round(deltaPitch / gcd) * gcd;
 
-        // GCD Fix
-        float sensitivity = mc.options.getMouseSensitivity().getValue().floatValue();
-        float f = sensitivity * 0.6f + 0.2f;
-        float gcd = f * f * f * 1.2f; 
-        deltaYaw = Math.round(deltaYaw / gcd) * gcd;
-        deltaPitch = Math.round(deltaPitch / gcd) * gcd;
+            player.setYaw(player.getYaw() + deltaYaw);
+            player.setPitch(MathHelper.clamp(player.getPitch() + deltaPitch, -90f, 90f));
+        } else {
+            player.setYaw(targetYaw);
+            player.setPitch(MathHelper.clamp(targetPitch, -90f, 90f));
+        }
+    }
 
-        player.setYaw(player.getYaw() + deltaYaw);
-        player.setPitch(MathHelper.clamp(player.getPitch() + deltaPitch, -90f, 90f));
+    // Вызывается из ZKillaura
+    public void performWTap(LivingEntity target) {
+        if (wTap.get() && mc.player.isSprinting()) {
+            mc.options.sprintKey.setPressed(false);
+            mc.player.setSprinting(false);
+            isWTapPending = true;
+            pendingWTapTarget = target;
+            wTapEndTime = System.currentTimeMillis() + wTapMs.get();
+        } else {
+            mc.interactionManager.attackEntity(mc.player, target);
+            mc.player.swingHand(Hand.MAIN_HAND);
+            lockTarget(target);
+        }
     }
 
     private boolean entityCheck(Entity entity) {
@@ -162,6 +243,7 @@ public class ZAimbot extends Module {
         if (!entity.isAlive()) return false;
         if (!PlayerUtils.isWithin(entity, range.get())) return false;
         if (!entities.get().contains(entity.getType())) return false;
+        if (calculateFov(mc.player, entity) > fov.get()) return false;
         if (ignoreFriends.get() && entity instanceof PlayerEntity player && !Friends.get().shouldAttack(player)) return false;
         return ignoreWalls.get() || PlayerUtils.canSeeEntity(entity);
     }
