@@ -4,7 +4,7 @@ import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.systems.modules.Modules; // ВОТ ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
 import meteordevelopment.meteorclient.systems.modules.combat.KillAura;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
@@ -175,7 +175,8 @@ public class ZKillaura extends Module {
                 if (hitTimer-- > 0) return;
                 if (livingEntity.isBlocking()) {
                     // Передаем удар в ZAimbot
-                    Meteorist.modules.get(ZAimbot.class).performWTap(livingEntity);
+                    ZAimbot aimbot = Modules.get().get(ZAimbot.class);
+                    if (aimbot != null) aimbot.performWTap(livingEntity);
                     shieldState = ShieldState.Idle;
                 } else {
                     InvUtils.swap(originalSlot, false);
@@ -203,7 +204,8 @@ public class ZKillaura extends Module {
         if (yawDiff > 75.0) return;
 
         // Передаем удар в ZAimbot (там сидит W-Tap и спринт)
-        Meteorist.modules.get(ZAimbot.class).performWTap(livingEntity);
+        ZAimbot aimbot = Modules.get().get(ZAimbot.class);
+        if (aimbot != null) aimbot.performWTap(livingEntity);
         
         // Обновление рандомных значений
         if (currOnFallMode == OnFallMode.RandomValue) {
