@@ -1,7 +1,6 @@
 package zgoly.meteorist.modules;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
-import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
@@ -20,7 +19,6 @@ import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.registry.tag.ItemTags;
-import net.minecraft.util.Hand;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import zgoly.meteorist.Meteorist;
@@ -33,59 +31,38 @@ import static zgoly.meteorist.utils.MeteoristUtils.calculateFov;
 public class ZAimbot extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgAim = settings.createGroup("Aim");
-    private final SettingGroup sgWTap = settings.createGroup("W-Tap");
 
-    // --- FILTER ---
     private final Setting<Set<EntityType<?>>> entities = sgGeneral.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
     private final Setting<Double> range = sgGeneral.add(new DoubleSetting.Builder()
-            .name("range").description("The maximum range the entity can be to aim at it.").defaultValue(4.5).min(0).sliderMax(6).build()
+            .name("range").description("The maximum range.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
     private final Setting<Double> fov = sgGeneral.add(new DoubleSetting.Builder()
-            .name("fov").description("Field of view to target entities.").defaultValue(90).min(10).sliderMax(360).build()
+            .name("fov").description("Field of view.").defaultValue(90).min(10).sliderMax(360).build()
     );
     private final Setting<Boolean> ignoreFriends = sgGeneral.add(new BoolSetting.Builder()
-            .name("ignore-friends").description("Will avoid aiming at players on your friends list.").defaultValue(true).build()
-    );
-    private final Setting<Boolean> ignoreWalls = sgGeneral.add(new BoolSetting.Builder()
-            .name("ignore-walls").description("Allow aiming through walls.").defaultValue(false).build()
+            .name("ignore-friends").description("Ignore friends.").defaultValue(true).build()
     );
 
-    // --- AIM ---
     private final Setting<Boolean> onlySword = sgAim.add(new BoolSetting.Builder()
-            .name("only-sword").description("Aim only when holding a sword.").defaultValue(false).build()
+            .name("only-sword").description("Aim only with sword.").defaultValue(false).build()
     );
     private final Setting<Boolean> onlyX = sgAim.add(new BoolSetting.Builder()
-            .name("only-x-coordinate").description("Aim only horizontally (ignore vertical pitch).").defaultValue(false).build()
+            .name("only-x-coordinate").description("Aim only horizontally.").defaultValue(false).build()
     );
     private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
             .name("speed").description("Speed of smooth aim.").defaultValue(3.0).min(0.1).sliderMax(10.0).build()
     );
-    private final Setting<Boolean> smoothAim = sgAim.add(new BoolSetting.Builder()
-            .name("smooth-aim").description("Enables smooth aiming.").defaultValue(true).build()
-    );
     private final Setting<Boolean> randomizeTarget = sgAim.add(new BoolSetting.Builder()
-            .name("randomize-target").description("Randomizes the exact aim point on the hitbox.").defaultValue(true).build()
+            .name("randomize-target").description("Randomizes hitbox point.").defaultValue(true).build()
     );
     private final Setting<Double> targetLockTime = sgAim.add(new DoubleSetting.Builder()
-            .name("target-lock-time").description("Сколько секунд удерживать фокус на цели.").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
-    );
-
-    // --- W-TAP ---
-    private final Setting<Boolean> wTap = sgWTap.add(new BoolSetting.Builder()
-            .name("w-tap").description("Сброс спринта перед ударом.").defaultValue(true).build()
-    );
-    private final Setting<Integer> wTapMs = sgWTap.add(new IntSetting.Builder()
-            .name("w-tap-ms").description("Задержка сброса спринта в миллисекундах (1-50 мс).").defaultValue(30).sliderRange(1, 50).visible(wTap::get).build()
+            .name("target-lock-time").description("Target lock seconds.").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
     );
 
     private final Random random = new Random();
     private Vec3d currentAimPoint = null;
-
-    private boolean isWTapPending = false;
-    private long wTapEndTime = 0;
-    private LivingEntity pendingWTapTarget = null;
 
     public static LivingEntity lockedTarget = null;
     public static long lockedTargetTime = 0;
@@ -96,56 +73,19 @@ public class ZAimbot extends Module {
     }
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot with W-Tap.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot.");
     }
 
     @Override
     public void onActivate() {
         currentAimPoint = null;
         lockedTarget = null;
-        isWTapPending = false;
-        pendingWTapTarget = null;
-    }
-
-    @EventHandler
-    private void onTick(TickEvent.Pre event) {
-        if (mc.player == null || mc.world == null) return;
-
-        if (isWTapPending) {
-            if (System.currentTimeMillis() >= wTapEndTime) {
-                if (pendingWTapTarget != null && mc.world.getEntityById(pendingWTapTarget.getId()) != null) {
-                    mc.interactionManager.attackEntity(mc.player, pendingWTapTarget);
-                    mc.player.swingHand(Hand.MAIN_HAND);
-                    lockTarget(pendingWTapTarget);
-                }
-                mc.options.sprintKey.setPressed(true);
-                mc.player.setSprinting(true);
-                isWTapPending = false;
-                pendingWTapTarget = null;
-            }
-        }
-    }
-
-    // Вызывается из ZKillaura
-    public void performWTap(LivingEntity target) {
-        if (wTap.get() && mc.player.isSprinting()) {
-            mc.options.sprintKey.setPressed(false);
-            mc.player.setSprinting(false);
-            isWTapPending = true;
-            pendingWTapTarget = target;
-            wTapEndTime = System.currentTimeMillis() + wTapMs.get();
-        } else {
-            mc.interactionManager.attackEntity(mc.player, target);
-            mc.player.swingHand(Hand.MAIN_HAND);
-            lockTarget(target);
-        }
     }
 
     @EventHandler
     private void onRender3D(Render3DEvent event) {
         if (mc.player == null || mc.world == null) return;
         if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
-        if (isWTapPending) return;
 
         Entity target = null;
         long currentTime = System.currentTimeMillis();
@@ -191,23 +131,18 @@ public class ZAimbot extends Module {
 
         if (onlyX.get()) pitchDifference = 0;
 
-        if (smoothAim.get()) {
-            float speedFactor = aimSpeed.get().floatValue() / 10.0f;
-            float deltaYaw = yawDifference * speedFactor;
-            float deltaPitch = pitchDifference * speedFactor;
-            
-            float sens = mc.options.getMouseSensitivity().getValue().floatValue();
-            float f = sens * 0.6f + 0.2f;
-            float gcd = f * f * f * 1.2f; 
-            deltaYaw = Math.round(deltaYaw / gcd) * gcd;
-            deltaPitch = Math.round(deltaPitch / gcd) * gcd;
+        float speedFactor = aimSpeed.get().floatValue() / 10.0f;
+        float deltaYaw = yawDifference * speedFactor;
+        float deltaPitch = pitchDifference * speedFactor;
+        
+        float sens = mc.options.getMouseSensitivity().getValue().floatValue();
+        float f = sens * 0.6f + 0.2f;
+        float gcd = f * f * f * 1.2f; 
+        deltaYaw = Math.round(deltaYaw / gcd) * gcd;
+        deltaPitch = Math.round(deltaPitch / gcd) * gcd;
 
-            player.setYaw(player.getYaw() + deltaYaw);
-            player.setPitch(MathHelper.clamp(player.getPitch() + deltaPitch, -90f, 90f));
-        } else {
-            player.setYaw(targetYaw);
-            player.setPitch(MathHelper.clamp(targetPitch, -90f, 90f));
-        }
+        player.setYaw(player.getYaw() + deltaYaw);
+        player.setPitch(MathHelper.clamp(player.getPitch() + deltaPitch, -90f, 90f));
     }
 
     private boolean entityCheck(Entity entity) {
@@ -217,6 +152,6 @@ public class ZAimbot extends Module {
         if (!entities.get().contains(entity.getType())) return false;
         if (calculateFov(mc.player, entity) > fov.get()) return false;
         if (ignoreFriends.get() && entity instanceof PlayerEntity player && !Friends.get().shouldAttack(player)) return false;
-        return ignoreWalls.get() || PlayerUtils.canSeeEntity(entity);
+        return PlayerUtils.canSeeEntity(entity);
     }
 }
