@@ -26,8 +26,8 @@ public class ZAutoSprint extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
         
-        boolean canSprint = onlyForward.get() ? mc.player.input.hasForwardMovement() : 
-                (mc.player.input.hasForwardMovement() || mc.player.input.pressingLeft || mc.player.input.pressingRight);
+        boolean canSprint = onlyForward.get() ? mc.options.forwardKey.isPressed() : 
+                (mc.options.forwardKey.isPressed() || mc.options.leftKey.isPressed() || mc.options.rightKey.isPressed());
 
         if (canSprint && !mc.player.isSprinting() && !mc.player.isUsingItem() && mc.player.getHungerManager().getFoodLevel() > 6) {
             mc.player.setSprinting(true);
