@@ -1,11 +1,9 @@
 package zgoly.meteorist.modules;
 
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
-import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.combat.KillAura;
 import meteordevelopment.meteorclient.utils.entity.SortPriority;
 import meteordevelopment.meteorclient.utils.entity.TargetUtils;
 import meteordevelopment.meteorclient.utils.player.PlayerUtils;
@@ -21,13 +19,11 @@ import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.registry.tag.ItemTags;
-import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import zgoly.meteorist.Meteorist;
-import zgoly.meteorist.utils.MeteoristUtils;
 
 import java.util.Random;
 import java.util.Set;
@@ -37,7 +33,6 @@ import static zgoly.meteorist.utils.MeteoristUtils.calculateFov;
 public class ZAimbot extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgAim = settings.createGroup("Aim");
-    private final SettingGroup sgMovement = settings.createGroup("Movement");
 
     // --- FILTER ---
     private final Setting<Set<EntityType<?>>> entities = sgGeneral.add(new EntityTypeListSetting.Builder()
@@ -82,22 +77,8 @@ public class ZAimbot extends Module {
             .name("target-lock-time").description("Сколько секунд удерживать фокус на цели.").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
     );
 
-    // --- MOVEMENT (SPRINT) ---
-    private final Setting<Boolean> autoSprint = sgMovement.add(new BoolSetting.Builder()
-            .name("auto-sprint").description("Автоматически зажимает спринт.").defaultValue(true).build()
-    );
-    private final Setting<Boolean> wTap = sgMovement.add(new BoolSetting.Builder()
-            .name("w-tap").description("Сброс спринта перед ударом (работает даже с выключенным триггером).").defaultValue(true).build()
-    );
-    private final Setting<Integer> wTapMs = sgMovement.add(new IntSetting.Builder()
-            .name("w-tap-ms").description("Задержка сброса спринта в миллисекундах (1-50 мс).").defaultValue(30).sliderRange(1, 50).visible(wTap::get).build()
-    );
-
     private final Random random = new Random();
     private Vec3d currentAimPoint = null;
-    private boolean isWTapPending = false;
-    private long wTapEndTime = 0;
-    private LivingEntity pendingWTapTarget = null;
 
     // Шарим лок с ZKillaura
     public static LivingEntity lockedTarget = null;
@@ -109,48 +90,19 @@ public class ZAimbot extends Module {
     }
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot with sprint control.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Simple smooth aimbot.");
     }
 
     @Override
     public void onActivate() {
         currentAimPoint = null;
         lockedTarget = null;
-        isWTapPending = false;
-        pendingWTapTarget = null;
-    }
-
-    @EventHandler
-    private void onTick(TickEvent.Pre event) {
-        if (mc.player == null || mc.world == null) return;
-
-        // 1. Обработка W-Tap (даже если триггер выключен)
-        if (isWTapPending) {
-            if (System.currentTimeMillis() >= wTapEndTime) {
-                if (pendingWTapTarget != null && mc.world.getEntityById(pendingWTapTarget.getId()) != null) {
-                    mc.interactionManager.attackEntity(mc.player, pendingWTapTarget);
-                    mc.player.swingHand(Hand.MAIN_HAND);
-                    lockTarget(pendingWTapTarget);
-                }
-                mc.options.sprintKey.setPressed(true);
-                mc.player.setSprinting(true);
-                isWTapPending = false;
-                pendingWTapTarget = null;
-            }
-            return;
-        }
-
-        // 2. Автоспринт
-        if (autoSprint.get() && mc.player.isOnGround() && mc.player.input.hasForwardMovement() && !mc.player.isUsingItem()) {
-            mc.player.setSprinting(true);
-        }
     }
 
     @EventHandler
     private void onRender3D(Render3DEvent event) {
         if (mc.player == null || mc.world == null) return;
         if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
-        if (isWTapPending) return; // Не целимся во время W-Tap задержки
 
         Entity target = null;
         long currentTime = System.currentTimeMillis();
@@ -220,21 +172,6 @@ public class ZAimbot extends Module {
         } else {
             player.setYaw(targetYaw);
             player.setPitch(MathHelper.clamp(targetPitch, -90f, 90f));
-        }
-    }
-
-    // Вызывается из ZKillaura
-    public void performWTap(LivingEntity target) {
-        if (wTap.get() && mc.player.isSprinting()) {
-            mc.options.sprintKey.setPressed(false);
-            mc.player.setSprinting(false);
-            isWTapPending = true;
-            pendingWTapTarget = target;
-            wTapEndTime = System.currentTimeMillis() + wTapMs.get();
-        } else {
-            mc.interactionManager.attackEntity(mc.player, target);
-            mc.player.swingHand(Hand.MAIN_HAND);
-            lockTarget(target);
         }
     }
 
