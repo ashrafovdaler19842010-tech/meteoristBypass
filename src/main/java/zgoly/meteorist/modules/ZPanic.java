@@ -4,6 +4,7 @@ import meteordevelopment.meteorclient.events.game.SendMessageEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.utils.misc.Keybind; // ВАЖНЫЙ ИМПОРТ
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -14,7 +15,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.List;
 
 public class ZPanic extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
@@ -57,14 +57,15 @@ public class ZPanic extends Module {
         new ArrayList<>(Modules.get().getActive()).forEach(Module::toggle);
 
         if (clearKeybinds.get()) {
+            // Очистка ванильных биндов
             for (KeyBinding key : mc.options.allKeys) {
                 if (key.getCategory().equals("key.categories.movement") || key.getCategory().equals("key.categories.gameplay")) continue;
                 key.setBoundKey(InputUtil.UNKNOWN_KEY);
             }
             mc.options.write();
             
-            // Сброс биндов модулей Meteor
-            Modules.get().getAll().forEach(module -> module.keybind.set(InputUtil.UNKNOWN_KEY));
+            // Очистка биндов модулей Meteor (исправлено)
+            Modules.get().getAll().forEach(module -> module.keybind.set(new Keybind(InputUtil.UNKNOWN_KEY)));
         }
 
         if (deleteLogs.get()) {
