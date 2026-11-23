@@ -110,9 +110,13 @@ public class Meteorist extends MeteorAddon {
         Modules.get().add(new SlotClick());
         Modules.get().add(new NerdVision());
         Modules.get().add(new RangeActions());
+        
+        // --- Z-МОДУЛИ ---
         Modules.get().add(new ZAimbot());
+        Modules.get().add(new ZAutoSprint()); // ДОБАВЛЕН АВТОСПРИНТ
         Modules.get().add(new ZAutoTotem());
         Modules.get().add(new ZKillaura());
+        Modules.get().add(new ZPanic());      // ДОБАВЛЕНА ПАНИКА
         Modules.get().add(new ZoomPlus());
 
         // Dev modules
