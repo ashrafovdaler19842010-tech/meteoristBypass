@@ -4,7 +4,7 @@ import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.Modules; // ВОТ ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
+import meteordevelopment.meteorclient.systems.modules.Modules; // ИСПРАВЛЕН ИМПОРТ
 import meteordevelopment.meteorclient.systems.modules.combat.KillAura;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
@@ -71,9 +71,9 @@ public class ZKillaura extends Module {
             .name("ignore-walls").description("Whether or not to attack mobs through walls.").defaultValue(false).build()
     );
 
-    // --- ATTACK (ОРИГИНАЛЬНЫЕ НАСТРОЙКИ) ---
+    // --- ATTACK ---
     private final Setting<OnFallMode> onFallMode = sgAttack.add(new EnumSetting.Builder<OnFallMode>()
-            .name("on-fall-mode").description("Chooses an attack strategy when falling to maximize critical damage.").defaultValue(OnFallMode.Value).build()
+            .name("on-fall-mode").description("Chooses an attack strategy when falling.").defaultValue(OnFallMode.Value).build()
     );
     private final Setting<Double> onFallValue = sgAttack.add(new DoubleSetting.Builder()
             .name("on-fall-value").description("Defines a specific value for attacking while falling.").min(0).defaultValue(0.25).sliderMax(1).visible(() -> onFallMode.get() == OnFallMode.Value).build()
@@ -155,7 +155,6 @@ public class ZKillaura extends Module {
         Entity entity = ((EntityHitResult) hitResult).getEntity();
         LivingEntity livingEntity = (LivingEntity) entity;
 
-        // Логика щита
         if (shieldMode.get() == ShieldMode.Break) {
             if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
                 FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
@@ -174,7 +173,6 @@ public class ZKillaura extends Module {
             if (shieldState == ShieldState.Attack) {
                 if (hitTimer-- > 0) return;
                 if (livingEntity.isBlocking()) {
-                    // Передаем удар в ZAimbot
                     ZAimbot aimbot = Modules.get().get(ZAimbot.class);
                     if (aimbot != null) aimbot.performWTap(livingEntity);
                     shieldState = ShieldState.Idle;
@@ -186,28 +184,23 @@ public class ZKillaura extends Module {
             }
         }
 
-        // Оригинальный Fall Mode
         OnFallMode currOnFallMode = onFallMode.get();
         if (currOnFallMode != OnFallMode.None) {
             float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
             if (!(mc.player.fallDistance > onFall)) return;
         }
 
-        // Оригинальный Hit Speed Mode
         HitSpeedMode currHitSpeedMode = hitSpeedMode.get();
         float hitSpeed = currHitSpeedMode == HitSpeedMode.Value ? hitSpeedValue.get().floatValue() : randomHitSpeedFloat;
         if (currHitSpeedMode != HitSpeedMode.None && (mc.player.getAttackCooldownProgress(hitSpeed) * 17.0F) < 16) return;
 
-        // Проверка угла
         float yawToTarget = (float) Math.toDegrees(Math.atan2(livingEntity.getZ() - mc.player.getZ(), livingEntity.getX() - mc.player.getX())) - 90f;
         float yawDiff = Math.abs(MathHelper.wrapDegrees(mc.player.getYaw() - yawToTarget));
         if (yawDiff > 75.0) return;
 
-        // Передаем удар в ZAimbot (там сидит W-Tap и спринт)
         ZAimbot aimbot = Modules.get().get(ZAimbot.class);
         if (aimbot != null) aimbot.performWTap(livingEntity);
         
-        // Обновление рандомных значений
         if (currOnFallMode == OnFallMode.RandomValue) {
             float min = Math.min(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
             float max = Math.max(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
