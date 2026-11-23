@@ -4,6 +4,7 @@ import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.systems.modules.combat.KillAura;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
@@ -113,21 +114,12 @@ public class ZKillaura extends Module {
             .name("hit-delay-value").description("Defines a specific delay (in ticks) before hitting.").defaultValue(2).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && hitDelayMode.get() == DelayMode.Value).build()
     );
 
-    // --- VISUAL & W-TAP ---
+    // --- VISUAL ---
     private final Setting<Boolean> swingHand = sgVisual.add(new BoolSetting.Builder()
             .name("swing-hand").description("Makes hand swing visible client-side.").defaultValue(true).build()
     );
     private final Setting<Boolean> onlySword = sgFilter.add(new BoolSetting.Builder()
             .name("only-sword").description("Attack only when holding a sword.").defaultValue(false).build()
-    );
-    private final Setting<Boolean> autoSprint = sgAttack.add(new BoolSetting.Builder()
-            .name("auto-sprint").description("Автоматически зажимает спринт.").defaultValue(true).build()
-    );
-    private final Setting<Boolean> wTap = sgAttack.add(new BoolSetting.Builder()
-            .name("w-tap").description("Сброс спринта перед ударом.").defaultValue(true).build()
-    );
-    private final Setting<Integer> wTapMs = sgAttack.add(new IntSetting.Builder()
-            .name("w-tap-ms").description("Задержка сброса спринта в миллисекундах (1-50 мс).").defaultValue(30).sliderRange(1, 50).visible(wTap::get).build()
     );
 
     float randomOnFallFloat = 0;
@@ -137,14 +129,9 @@ public class ZKillaura extends Module {
     private int originalSlot = -1;
     
     private final Random random = new Random();
-    
-    // W-Tap variables
-    private boolean isWTapPending = false;
-    private long wTapEndTime = 0;
-    private LivingEntity pendingTarget = null;
 
     public ZKillaura() {
-        super(Meteorist.CATEGORY, "z-kill-aura", "Killaura with W-Tap and original settings.");
+        super(Meteorist.CATEGORY, "z-kill-aura", "Killaura with original settings.");
     }
 
     @Override
@@ -154,36 +141,11 @@ public class ZKillaura extends Module {
         shieldState = ShieldState.Idle;
         swapTimer = hitTimer = 0;
         originalSlot = -1;
-        isWTapPending = false;
-        pendingTarget = null;
     }
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
-
-        // 1. Обработка отложенного W-Tap (Ждем задержку в мс)
-        if (isWTapPending) {
-            if (System.currentTimeMillis() >= wTapEndTime) {
-                if (pendingTarget != null && mc.world.getEntityById(pendingTarget.getId()) != null) {
-                    mc.interactionManager.attackEntity(mc.player, pendingTarget);
-                    if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-                    ZAimbot.lockTarget(pendingTarget); // Лочим аим
-                }
-                // Возвращаем спринт
-                mc.options.sprintKey.setPressed(true);
-                mc.player.setSprinting(true);
-                
-                isWTapPending = false;
-                pendingTarget = null;
-            }
-            return; // Ждем завершения задержки
-        }
-
-        // Автоспринт
-        if (autoSprint.get() && mc.player.isOnGround() && mc.player.input.hasForwardMovement() && !mc.player.isUsingItem()) {
-            mc.player.setSprinting(true);
-        }
 
         if (onlySword.get() && !mc.player.getMainHandStack().isIn(ItemTags.SWORDS)) return;
 
@@ -192,8 +154,6 @@ public class ZKillaura extends Module {
 
         Entity entity = ((EntityHitResult) hitResult).getEntity();
         LivingEntity livingEntity = (LivingEntity) entity;
-
-        // (УДАЛЕНА ПРОВЕРКА НА БЕССМЕРТИЕ)
 
         // Логика щита
         if (shieldMode.get() == ShieldMode.Break) {
@@ -214,7 +174,8 @@ public class ZKillaura extends Module {
             if (shieldState == ShieldState.Attack) {
                 if (hitTimer-- > 0) return;
                 if (livingEntity.isBlocking()) {
-                    triggerAttack(livingEntity);
+                    // Передаем удар в ZAimbot
+                    Meteorist.modules.get(ZAimbot.class).performWTap(livingEntity);
                     shieldState = ShieldState.Idle;
                 } else {
                     InvUtils.swap(originalSlot, false);
@@ -239,10 +200,10 @@ public class ZKillaura extends Module {
         // Проверка угла
         float yawToTarget = (float) Math.toDegrees(Math.atan2(livingEntity.getZ() - mc.player.getZ(), livingEntity.getX() - mc.player.getX())) - 90f;
         float yawDiff = Math.abs(MathHelper.wrapDegrees(mc.player.getYaw() - yawToTarget));
-        if (yawDiff > 75.0) return; // rotationSpeedLimit
+        if (yawDiff > 75.0) return;
 
-        // Атака (с проверкой на W-Tap)
-        triggerAttack(livingEntity);
+        // Передаем удар в ZAimbot (там сидит W-Tap и спринт)
+        Meteorist.modules.get(ZAimbot.class).performWTap(livingEntity);
         
         // Обновление рандомных значений
         if (currOnFallMode == OnFallMode.RandomValue) {
@@ -254,23 +215,6 @@ public class ZKillaura extends Module {
             float min = Math.min(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
             float max = Math.max(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
             randomHitSpeedFloat = min + mc.world.random.nextFloat() * (max - min);
-        }
-    }
-
-    private void triggerAttack(LivingEntity target) {
-        if (wTap.get() && mc.player.isSprinting()) {
-            // Сбрасываем спринт и ждем задержку
-            mc.options.sprintKey.setPressed(false);
-            mc.player.setSprinting(false);
-            
-            isWTapPending = true;
-            pendingTarget = target;
-            wTapEndTime = System.currentTimeMillis() + wTapMs.get();
-        } else {
-            // Если W-Tap выключен или мы не бежим, бьем сразу
-            mc.interactionManager.attackEntity(mc.player, target);
-            if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
-            ZAimbot.lockTarget(target);
         }
     }
 
