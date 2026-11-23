@@ -4,7 +4,6 @@ import meteordevelopment.meteorclient.events.game.SendMessageEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
-import meteordevelopment.meteorclient.utils.misc.Keybind; // ВАЖНЫЙ ИМПОРТ
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -57,15 +56,15 @@ public class ZPanic extends Module {
         new ArrayList<>(Modules.get().getActive()).forEach(Module::toggle);
 
         if (clearKeybinds.get()) {
-            // Очистка ванильных биндов
+            // Сброс ванильных биндов
             for (KeyBinding key : mc.options.allKeys) {
                 if (key.getCategory().equals("key.categories.movement") || key.getCategory().equals("key.categories.gameplay")) continue;
                 key.setBoundKey(InputUtil.UNKNOWN_KEY);
             }
             mc.options.write();
             
-            // Очистка биндов модулей Meteor (исправлено)
-            Modules.get().getAll().forEach(module -> module.keybind.set(new Keybind(InputUtil.UNKNOWN_KEY)));
+            // Сброс биндов модулей Meteor
+            Modules.get().getAll().forEach(module -> module.keybind.reset());
         }
 
         if (deleteLogs.get()) {
