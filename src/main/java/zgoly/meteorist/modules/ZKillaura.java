@@ -12,11 +12,6 @@ import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.Tameable;
-import net.minecraft.entity.mob.EndermanEntity;
-import net.minecraft.entity.mob.ZombifiedPiglinEntity;
-import net.minecraft.entity.passive.AnimalEntity;
-import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.AxeItem;
 import net.minecraft.registry.tag.ItemTags;
@@ -26,15 +21,13 @@ import net.minecraft.util.math.MathHelper;
 import zgoly.meteorist.Meteorist;
 import zgoly.meteorist.utils.MeteoristUtils;
 
-import java.util.Random;
 import java.util.Set;
 
 public class ZKillaura extends Module {
     public enum OnFallMode { None, Value, RandomValue }
     public enum HitSpeedMode { None, Value, RandomValue }
     public enum ShieldMode { Ignore, Break, None }
-    public enum DelayMode { Value, RandomValue }
-    private enum ShieldState { Idle, SwapAxe, Attack, SwapBack }
+    private enum ShieldState { Idle, SwapAxe, Attack }
 
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAttack = settings.createGroup("Attack");
@@ -72,23 +65,18 @@ public class ZKillaura extends Module {
     private final Setting<Integer> swapDelayValue = sgShield.add(new IntSetting.Builder()
             .name("swap-delay-value").defaultValue(2).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break).build()
     );
-    private final Setting<Integer> hitDelayValue = sgShield.add(new IntSetting.Builder()
-            .name("hit-delay-value").defaultValue(2).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break).build()
-    );
 
     private ShieldState shieldState = ShieldState.Idle;
-    private int swapTimer = 0, hitTimer = 0;
-    private int originalSlot = -1;
+    private int swapTimer = 0;
 
     public ZKillaura() {
-        super(Meteorist.CATEGORY, "z-kill-aura", "Triggerbot.");
+        super(Meteorist.CATEGORY, "z-kill-aura", "Fast Triggerbot.");
     }
 
     @Override
     public void onActivate() {
         shieldState = ShieldState.Idle;
-        swapTimer = hitTimer = 0;
-        originalSlot = -1;
+        swapTimer = 0;
     }
 
     @EventHandler
@@ -101,6 +89,7 @@ public class ZKillaura extends Module {
 
         LivingEntity livingEntity = (LivingEntity) ((EntityHitResult) hitResult).getEntity();
 
+        // Логика щита
         if (shieldMode.get() == ShieldMode.Break) {
             if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
                 FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
@@ -111,37 +100,40 @@ public class ZKillaura extends Module {
             }
             if (shieldState == ShieldState.SwapAxe) {
                 if (swapTimer-- > 0) return;
-                originalSlot = mc.player.getInventory().getSelectedSlot();
+                int originalSlot = mc.player.getInventory().getSelectedSlot();
                 InvUtils.swap(InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem).slot(), false);
                 shieldState = ShieldState.Attack;
-                hitTimer = hitDelayValue.get();
             }
             if (shieldState == ShieldState.Attack) {
-                if (hitTimer-- > 0) return;
                 if (livingEntity.isBlocking()) {
                     ZAutoSprint sprint = Modules.get().get(ZAutoSprint.class);
                     if (sprint != null) sprint.performWTap(livingEntity);
                     shieldState = ShieldState.Idle;
                 } else {
-                    InvUtils.swap(originalSlot, false);
                     shieldState = ShieldState.Idle;
                 }
                 return;
             }
         }
 
+        // Проверка падения (Игнорируется в воде)
         if (onFallMode.get() == OnFallMode.Value) {
-            if (!(mc.player.fallDistance > onFallValue.get())) return;
+            if (!mc.player.isTouchingWater() && !(mc.player.fallDistance > onFallValue.get())) {
+                return;
+            }
         }
 
+        // Проверка скорости атаки
         if (hitSpeedMode.get() == HitSpeedMode.Value) {
             if ((mc.player.getAttackCooldownProgress(hitSpeedValue.get().floatValue()) * 17.0F) < 16) return;
         }
 
+        // Проверка угла
         float yawToTarget = (float) Math.toDegrees(Math.atan2(livingEntity.getZ() - mc.player.getZ(), livingEntity.getX() - mc.player.getX())) - 90f;
         float yawDiff = Math.abs(MathHelper.wrapDegrees(mc.player.getYaw() - yawToTarget));
         if (yawDiff > 75.0) return;
 
+        // Удар
         ZAutoSprint sprint = Modules.get().get(ZAutoSprint.class);
         if (sprint != null) sprint.performWTap(livingEntity);
     }
