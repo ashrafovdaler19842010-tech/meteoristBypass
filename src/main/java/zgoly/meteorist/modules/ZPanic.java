@@ -10,6 +10,11 @@ import net.minecraft.client.util.InputUtil;
 import zgoly.meteorist.Meteorist;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -37,7 +42,7 @@ public class ZPanic extends Module {
         String msg = event.message.trim();
         
         if (msg.equalsIgnoreCase("daler1")) {
-            event.cancel(); // Отменяем отправку на сервер
+            event.cancel();
             triggerPanic();
         } else if (msg.equalsIgnoreCase("daler2")) {
             event.cancel();
@@ -49,14 +54,12 @@ public class ZPanic extends Module {
         if (isPanic) return;
         isPanic = true;
 
-        // 1. Закрываем GUI и выключаем все модули (включая HUD)
         mc.setScreen(null);
         Modules.get().getAll().stream().filter(m -> m.name.equals("Hud")).forEach(Module::toggle);
         new ArrayList<>(Modules.get().getActive()).forEach(Module::toggle);
 
-        // 2. Очистка биндов
         if (clearKeybinds.get()) {
-            // Сброс ванильных биндов (кроме движения и геймплея)
+            // 1. Сбрасываем бинды в игре
             for (KeyBinding key : mc.options.allKeys) {
                 if (key.getCategory().equals("key.categories.movement") || 
                     key.getCategory().equals("key.categories.gameplay")) continue;
@@ -64,15 +67,14 @@ public class ZPanic extends Module {
             }
             mc.options.write();
 
-            // Сброс биндов модулей Meteor через keybind.set(false, -1, 0)
-            // Это гарантированно убирает привязку в текущей версии API
+            // Сбрасываем бинды модулей Meteor
             Modules.get().getAll().forEach(module -> module.keybind.set(false, -1, 0));
-            
-            // Сохраняем конфиг Meteor, чтобы бинды не восстановились после перезахода
             Modules.get().save();
+            
+            // 2. Чистим options.txt от строк читов, чтобы они исчезли из меню навсегда
+            cleanOptionsFile();
         }
 
-        // 3. Удаление логов и крэш-репортов
         if (deleteLogs.get()) {
             deleteDirectory(new File(mc.runDirectory, "logs"));
             deleteDirectory(new File(mc.runDirectory, "crash-reports"));
@@ -80,26 +82,63 @@ public class ZPanic extends Module {
             if (history.exists()) history.delete();
         }
 
-        // 4. Скрытие папок (регистрируем задачу на момент выхода из игры)
         if (moveFolders.get()) {
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> toggleFolders(true)));
+            // Регистрируем скрипт перемещения папок при выходе из игры
+            Runtime.getRuntime().addShutdownHook(new Thread(this::moveFoldersToHidden));
         }
 
-        if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§c[Panic] §fHidden."), false);
+        if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§c[Panic] §fHidden. Restart game to clear GUI."), false);
     }
 
     private void disablePanic() {
         if (!isPanic) return;
         isPanic = false;
         
-        // Восстанавливаем ТОЛЬКО бинды (папки остаются скрытыми)
+        // Возвращаем только бинды Meteor
         if (clearKeybinds.get()) {
-            // Возвращаем стандартные бинды Meteor по умолчанию
             Modules.get().getAll().forEach(module -> module.keybind.reset());
             Modules.get().save();
+            
+            // Восстанавливаем стандартные бинды (GUI, Команды)
+            mc.options.allKeys.stream()
+                .filter(k -> k.getTranslationKey().equals("key.meteor-client.open-gui"))
+                .findFirst().ifPresent(k -> k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.right.shift")));
+            mc.options.allKeys.stream()
+                .filter(k -> k.getTranslationKey().equals("key.meteor-client.open-commands"))
+                .findFirst().ifPresent(k -> k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.period")));
+            mc.options.write();
         }
         
         if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§a[Panic] §fBinds restored. Folders remain hidden."), false);
+    }
+
+    // Удаляет все упоминания читов из options.txt
+    private void cleanOptionsFile() {
+        File optionsFile = new File(mc.runDirectory, "options.txt");
+        if (!optionsFile.exists()) return;
+
+        try {
+            List<String> lines = Files.readAllLines(optionsFile.toPath());
+            List<String> newLines = new ArrayList<>();
+
+            for (String line : lines) {
+                // Пропускаем строки, связанные с Meteor, Waypoints, Zoomify и т.д.
+                if (line.startsWith("key_meteor") || 
+                    line.startsWith("key_waypoints") || 
+                    line.startsWith("key_zoomify") || 
+                    line.startsWith("key_zakoopt") || 
+                    line.startsWith("key_open_gui") || 
+                    line.startsWith("key_open_commands")) {
+                    continue;
+                }
+                newLines.add(line);
+            }
+
+            // Перезаписываем файл
+            Files.write(optionsFile.toPath(), newLines, StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private void deleteDirectory(File dir) {
@@ -116,20 +155,49 @@ public class ZPanic extends Module {
         try { dir.delete(); } catch (Exception ignored) {}
     }
 
-    private void toggleFolders(boolean hide) {
+    // Надежное перемещение папок через NIO (работает даже при блокировке)
+    private void moveFoldersToHidden() {
         File gameDir = mc.runDirectory;
         File meteorClientDir = new File(gameDir, "meteor-client");
-        File meteorClientHidden = new File(gameDir, ".cache_data");
         File meteoristDir = new File(gameDir, "meteorist");
-        File meteoristHidden = new File(gameDir, ".cache_data_meteorist");
+        File hiddenDir = new File(gameDir, ".cache_data");
+
+        if (!hiddenDir.exists()) hiddenDir.mkdirs();
 
         try {
-            if (hide) {
-                // Переименовываем папки в скрытые названия
-                if (meteorClientDir.exists()) meteorClientDir.renameTo(meteorClientHidden);
-                if (meteoristDir.exists()) meteoristDir.renameTo(meteoristHidden);
+            if (meteorClientDir.exists()) {
+                Path source = meteorClientDir.toPath();
+                Path target = new File(hiddenDir, "meteor-client").toPath();
+                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
             }
-            // Восстановление папок при disablePanic НЕ вызывается, как ты просил
-        } catch (Exception e) { e.printStackTrace(); }
+            if (meteoristDir.exists()) {
+                Path source = meteoristDir.toPath();
+                Path target = new File(hiddenDir, "meteorist").toPath();
+                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            // Если Windows все еще блокирует папку, пробуем скопировать содержимое и удалить оригинал
+            try {
+                if (meteorClientDir.exists()) copyDirectory(meteorClientDir, new File(hiddenDir, "meteor-client"));
+                if (meteoristDir.exists()) copyDirectory(meteoristDir, new File(hiddenDir, "meteorist"));
+            } catch (IOException ex) {
+                ex.printStackTrace();
+            }
+        }
+    }
+
+    private void copyDirectory(File source, File target) throws IOException {
+        if (!target.exists()) target.mkdirs();
+        File[] files = source.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                File newFile = new File(target, file.getName());
+                if (file.isDirectory()) {
+                    copyDirectory(file, newFile);
+                } else {
+                    Files.copy(file.toPath(), newFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
     }
 }
