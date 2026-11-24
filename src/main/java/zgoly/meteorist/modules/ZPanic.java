@@ -10,22 +10,19 @@ import net.minecraft.client.util.InputUtil;
 import zgoly.meteorist.Meteorist;
 
 import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 
 public class ZPanic extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
     private final Setting<Boolean> clearKeybinds = sgGeneral.add(new BoolSetting.Builder()
-            .name("clear-keybinds").description("Убирает бинды.").defaultValue(true).build()
+            .name("clear-keybinds").defaultValue(true).build()
     );
     private final Setting<Boolean> moveFolders = sgGeneral.add(new BoolSetting.Builder()
-            .name("move-folders").description("Переименовывает папки.").defaultValue(true).build()
+            .name("move-folders").defaultValue(true).build()
     );
     private final Setting<Boolean> deleteLogs = sgGeneral.add(new BoolSetting.Builder()
-            .name("delete-logs").description("Удаляет логи.").defaultValue(true).build()
+            .name("delete-logs").defaultValue(true).build()
     );
 
     private boolean isPanic = false;
@@ -36,13 +33,13 @@ public class ZPanic extends Module {
 
     @EventHandler
     private void onSendMessage(SendMessageEvent event) {
-        String msg = event.message;
+        String msg = event.message.trim();
         
         if (msg.equalsIgnoreCase("daler1")) {
-            event.cancel();
+            event.setMessage(""); // Стираем сообщение
             triggerPanic();
         } else if (msg.equalsIgnoreCase("daler2")) {
-            event.cancel();
+            event.setMessage("");
             disablePanic();
         }
     }
@@ -56,24 +53,18 @@ public class ZPanic extends Module {
         new ArrayList<>(Modules.get().getActive()).forEach(Module::toggle);
 
         if (clearKeybinds.get()) {
-            // Сброс ванильных биндов
             for (KeyBinding key : mc.options.allKeys) {
                 if (key.getCategory().equals("key.categories.movement") || key.getCategory().equals("key.categories.gameplay")) continue;
                 key.setBoundKey(InputUtil.UNKNOWN_KEY);
             }
             mc.options.write();
-            
-            // Сброс биндов модулей Meteor
             Modules.get().getAll().forEach(module -> module.keybind.reset());
         }
 
         if (deleteLogs.get()) {
-            File gameDir = mc.runDirectory;
-            File logsDir = new File(gameDir, "logs");
-            if (logsDir.exists() && logsDir.listFiles() != null) for (File f : logsDir.listFiles()) f.delete();
-            File crashDir = new File(gameDir, "crash-reports");
-            if (crashDir.exists() && crashDir.listFiles() != null) for (File f : crashDir.listFiles()) f.delete();
-            File history = new File(gameDir, "command_history.txt");
+            deleteDirectory(new File(mc.runDirectory, "logs"));
+            deleteDirectory(new File(mc.runDirectory, "crash-reports"));
+            File history = new File(mc.runDirectory, "command_history.txt");
             if (history.exists()) history.delete();
         }
 
@@ -89,6 +80,20 @@ public class ZPanic extends Module {
         if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§a[Panic] §fRestored."), false);
     }
 
+    private void deleteDirectory(File dir) {
+        if (!dir.exists()) return;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                if (file.isDirectory()) deleteDirectory(file);
+                else {
+                    try { file.delete(); } catch (Exception ignored) {}
+                }
+            }
+        }
+        try { dir.delete(); } catch (Exception ignored) {}
+    }
+
     private void toggleFolders(boolean hide) {
         File gameDir = mc.runDirectory;
         File meteorClientDir = new File(gameDir, "meteor-client");
@@ -98,12 +103,12 @@ public class ZPanic extends Module {
 
         try {
             if (hide) {
-                if (meteorClientDir.exists()) Files.move(meteorClientDir.toPath(), meteorClientHidden.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                if (meteoristDir.exists()) Files.move(meteoristDir.toPath(), meteoristHidden.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                if (meteorClientDir.exists()) meteorClientDir.renameTo(meteorClientHidden);
+                if (meteoristDir.exists()) meteoristDir.renameTo(meteoristHidden);
             } else {
-                if (meteorClientHidden.exists()) Files.move(meteorClientHidden.toPath(), meteorClientDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                if (meteoristHidden.exists()) Files.move(meteoristHidden.toPath(), meteoristDir.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                if (meteorClientHidden.exists()) meteorClientHidden.renameTo(meteorClientDir);
+                if (meteoristHidden.exists()) meteoristHidden.renameTo(meteoristDir);
             }
-        } catch (IOException e) { e.printStackTrace(); }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 }
