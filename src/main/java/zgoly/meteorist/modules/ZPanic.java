@@ -36,9 +36,11 @@ public class ZPanic extends Module {
         String msg = event.message.trim();
         
         if (msg.equalsIgnoreCase("daler1")) {
-            event.setMessage(""); // Стираем сообщение
+            event.cancel(); // Полная отмена сообщения
+            event.setMessage(""); // Стираем текст
             triggerPanic();
         } else if (msg.equalsIgnoreCase("daler2")) {
+            event.cancel();
             event.setMessage("");
             disablePanic();
         }
@@ -58,7 +60,9 @@ public class ZPanic extends Module {
                 key.setBoundKey(InputUtil.UNKNOWN_KEY);
             }
             mc.options.write();
-            Modules.get().getAll().forEach(module -> module.keybind.reset());
+            
+            // Правильный сброс биндов модулей Meteor
+            Modules.get().getAll().forEach(module -> module.keybind.set(false, -1, 0));
         }
 
         if (deleteLogs.get()) {
@@ -68,7 +72,10 @@ public class ZPanic extends Module {
             if (history.exists()) history.delete();
         }
 
-        if (moveFolders.get()) toggleFolders(true);
+        if (moveFolders.get()) {
+            // Регистрируем перенос папок при закрытии игры, чтобы Windows не блокировал файлы
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> toggleFolders(true)));
+        }
 
         if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§c[Panic] §fHidden."), false);
     }
