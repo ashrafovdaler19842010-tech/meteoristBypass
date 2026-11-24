@@ -99,13 +99,15 @@ public class ZPanic extends Module {
             Modules.get().getAll().forEach(module -> module.keybind.reset());
             Modules.get().save();
             
-            // Восстанавливаем стандартные бинды (GUI, Команды)
-            mc.options.allKeys.stream()
-                .filter(k -> k.getTranslationKey().equals("key.meteor-client.open-gui"))
-                .findFirst().ifPresent(k -> k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.right.shift")));
-            mc.options.allKeys.stream()
-                .filter(k -> k.getTranslationKey().equals("key.meteor-client.open-commands"))
-                .findFirst().ifPresent(k -> k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.period")));
+            // Восстанавливаем стандартные бинды (GUI, Команды) через обычный цикл
+            for (KeyBinding k : mc.options.allKeys) {
+                if (k.getTranslationKey().equals("key.meteor-client.open-gui")) {
+                    k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.right.shift"));
+                }
+                if (k.getTranslationKey().equals("key.meteor-client.open-commands")) {
+                    k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.period"));
+                }
+            }
             mc.options.write();
         }
         
