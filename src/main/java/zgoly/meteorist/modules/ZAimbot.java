@@ -35,11 +35,9 @@ public class ZAimbot extends Module {
     private final Setting<Set<EntityType<?>>> entities = sgGeneral.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
-    // Range отвечает ТОЛЬКО за поворот камеры
     private final Setting<Double> range = sgGeneral.add(new DoubleSetting.Builder()
             .name("range").description("Distance to rotate camera.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
-    // AggroRange отвечает за запоминание цели
     private final Setting<Double> aggroRange = sgGeneral.add(new DoubleSetting.Builder()
             .name("aggro-range").description("Distance to remember and lock target.").defaultValue(10.0).min(1.0).sliderMax(20.0).build()
     );
@@ -101,7 +99,6 @@ public class ZAimbot extends Module {
         Entity target = null;
         long currentTime = System.currentTimeMillis();
 
-        // 1. Проверяем, есть ли у нас "Агро" цель
         if (lockedTarget != null) {
             if (lockedTarget.isAlive() && PlayerUtils.isWithin(lockedTarget, aggroRange.get())
                 && (currentTime - lockedTargetTime < targetLockTime.get() * 1000)) {
@@ -111,11 +108,21 @@ public class ZAimbot extends Module {
             }
         }
 
-        // 2. Если Агро нет, ищем новую в радиусе AggroRange
         if (target == null) {
-            target = TargetUtils.get(this::entityCheck, SortPriority.ClosestAngle);
-            if (target != null) {
-                lockedTarget = (LivingEntity) target;
+            // Ищем новую цель в радиусе агрессии
+            LivingEntity closest = null;
+            double closestDist = Double.MAX_VALUE;
+            
+            for (Entity e : mc.world.getEntities()) {
+                if (entityCheck(e) && mc.player.distanceTo(e) < closestDist) {
+                    closest = (LivingEntity) e;
+                    closestDist = mc.player.distanceTo(e);
+                }
+            }
+            
+            if (closest != null) {
+                target = closest;
+                lockedTarget = closest;
                 lockedTargetTime = currentTime;
                 currentAimPoint = null;
             }
@@ -123,10 +130,7 @@ public class ZAimbot extends Module {
 
         if (target == null) return;
 
-        // 3. Ограничение наводки. Если цель дальше Range, мы просто запомнили её, но не крутим камеру
         if (!PlayerUtils.isWithin(target, range.get())) return;
-        
-        // Проверка FOV для поворота камеры
         if (calculateFov(mc.player, target) > fov.get()) return;
 
         aim(mc.player, target);
@@ -137,7 +141,6 @@ public class ZAimbot extends Module {
         Vec3d eyePos = player.getEyePos();
         
         if (aimMode.get() == AimMode.EdgeOnly) {
-            // Если прицел уже в хитбоксе (или попал в него), ничего не делаем
             HitResult hit = mc.crosshairTarget;
             if (hit != null && hit.getType() == HitResult.Type.ENTITY) {
                 if (((EntityHitResult) hit).getEntity() == target) {
@@ -145,7 +148,6 @@ public class ZAimbot extends Module {
                 }
             }
             
-            // Если прицел вне хитбокса, ведем к ближайшей точке
             double x = MathHelper.clamp(eyePos.x, box.minX, box.maxX);
             double y = MathHelper.clamp(eyePos.y, box.minY, box.maxY);
             double z = MathHelper.clamp(eyePos.z, box.minZ, box.maxZ);
@@ -159,7 +161,6 @@ public class ZAimbot extends Module {
             currentAimPoint = new Vec3d(x, y, z);
             
         } else if (aimMode.get() == AimMode.ClosestPoint) {
-            // Ближайшая точка на хитбоксе
             double x = MathHelper.clamp(eyePos.x, box.minX, box.maxX);
             double y = MathHelper.clamp(eyePos.y, box.minY, box.maxY);
             double z = MathHelper.clamp(eyePos.z, box.minZ, box.maxZ);
@@ -172,7 +173,6 @@ public class ZAimbot extends Module {
             currentAimPoint = new Vec3d(x, y, z);
             
         } else {
-            // Random (как было)
             if (currentAimPoint == null || random.nextInt(10) < 2) {
                 double yBias = (random.nextDouble() + random.nextDouble() - 1.0) * 0.3 + 0.5; 
                 double y = target.getY() + target.getHeight() * yBias;
@@ -209,7 +209,7 @@ public class ZAimbot extends Module {
     private boolean entityCheck(Entity entity) {
         if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
         if (!entity.isAlive()) return false;
-        if (!PlayerUtils.isWithin(entity, aggroRange.get())) return false; // Ищем в радиусе агро
+        if (!PlayerUtils.isWithin(entity, aggroRange.get())) return false; 
         if (!entities.get().contains(entity.getType())) return false;
         if (ignoreFriends.get() && entity instanceof PlayerEntity player && !Friends.get().shouldAttack(player)) return false;
         return ignoreWalls.get() || PlayerUtils.canSeeEntity(entity);
