@@ -4,17 +4,15 @@ import meteordevelopment.meteorclient.events.game.SendMessageEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.systems.commands.Commands;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.option.GameOptions;
 import zgoly.meteorist.Meteorist;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,6 +30,7 @@ public class ZPanic extends Module {
     );
 
     private boolean isPanic = false;
+    private KeyBinding[] originalKeys = null;
 
     public ZPanic() {
         super(Meteorist.CATEGORY, "z-panic", "Hides all traces via chat commands.");
@@ -55,26 +54,49 @@ public class ZPanic extends Module {
         isPanic = true;
 
         mc.setScreen(null);
-        Modules.get().getAll().stream().filter(m -> m.name.equals("Hud")).forEach(Module::toggle);
-        new ArrayList<>(Modules.get().getActive()).forEach(Module::toggle);
+        
+        // Выключаем все модули
+        new ArrayList<>(Modules.get().getActive()).forEach(m -> {
+            if (m != this) m.toggle();
+        });
 
+        // 1. СКРЫТИЕ КОМАНД METEOR (префикс ".")
+        try {
+            Commands.get().setPrefix("___hidden___");
+        } catch (Exception ignored) {}
+
+        // 2. СКРЫТИЕ БИНДОВ ИЗ УПРАВЛЕНИЯ (без ломки E/F11)
         if (clearKeybinds.get()) {
-            // 1. Сбрасываем бинды в игре
-            for (KeyBinding key : mc.options.allKeys) {
-                if (key.getCategory().equals("key.categories.movement") || 
-                    key.getCategory().equals("key.categories.gameplay")) continue;
-                key.setBoundKey(InputUtil.UNKNOWN_KEY);
-            }
-            mc.options.write();
+            try {
+                if (originalKeys == null) {
+                    originalKeys = mc.options.allKeys.clone();
+                }
+                
+                List<KeyBinding> filtered = new ArrayList<>();
+                for (KeyBinding key : mc.options.allKeys) {
+                    String category = key.getCategory();
+                    String translation = key.getTranslationKey();
+                    // Оставляем только ванильные кнопки
+                    if (!category.contains("Meteor") && !category.contains("Meteorist") 
+                        && !translation.contains("meteor") && !translation.contains("waypoints")
+                        && !translation.contains("zoomify") && !translation.contains("zakoopt")) {
+                        filtered.add(key);
+                    }
+                }
 
-            // Сбрасываем бинды модулей Meteor
-            Modules.get().getAll().forEach(module -> module.keybind.set(false, -1, 0));
-            Modules.get().save();
-            
-            // 2. Чистим options.txt от строк читов, чтобы они исчезли из меню навсегда
-            cleanOptionsFile();
+                // Подменяем массив через рефлексию
+                Field field = GameOptions.class.getDeclaredField("allKeys");
+                field.setAccessible(true);
+                field.set(mc.options, filtered.toArray(new KeyBinding[0]));
+                
+                // Сохраняем конфиг
+                mc.options.write();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
 
+        // 3. УДАЛЕНИЕ ЛОГОВ
         if (deleteLogs.get()) {
             deleteDirectory(new File(mc.runDirectory, "logs"));
             deleteDirectory(new File(mc.runDirectory, "crash-reports"));
@@ -82,65 +104,60 @@ public class ZPanic extends Module {
             if (history.exists()) history.delete();
         }
 
+        // 4. ПЕРЕМЕЩЕНИЕ ПАПОК В ФОНЕ (через 3 секунды)
         if (moveFolders.get()) {
-            // Регистрируем скрипт перемещения папок при выходе из игры
-            Runtime.getRuntime().addShutdownHook(new Thread(this::moveFoldersToHidden));
+            new Thread(() -> {
+                try {
+                    // Ждем, пока игра полностью освободит файлы
+                    Thread.sleep(3000); 
+                    
+                    File gameDir = mc.runDirectory;
+                    File meteorClientDir = new File(gameDir, "meteor-client");
+                    File meteoristDir = new File(gameDir, "meteorist");
+                    File mcHidden = new File(gameDir, ".mc_data");
+                    File mistHidden = new File(gameDir, ".mist_data");
+
+                    if (meteorClientDir.exists()) {
+                        if (!meteorClientDir.renameTo(mcHidden)) {
+                            // Если не получилось, пробуем скопировать
+                            org.apache.commons.io.FileUtils.copyDirectory(meteorClientDir, mcHidden);
+                        }
+                    }
+                    if (meteoristDir.exists()) {
+                        if (!meteoristDir.renameTo(mistHidden)) {
+                            org.apache.commons.io.FileUtils.copyDirectory(meteoristDir, mistHidden);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }).start();
         }
 
-        if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§c[Panic] §fHidden. Restart game to clear GUI."), false);
+        if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§c[Panic] §fHidden. Restart game to clear UI."), false);
     }
 
     private void disablePanic() {
         if (!isPanic) return;
         isPanic = false;
         
-        // Возвращаем только бинды Meteor
-        if (clearKeybinds.get()) {
-            Modules.get().getAll().forEach(module -> module.keybind.reset());
-            Modules.get().save();
-            
-            // Восстанавливаем стандартные бинды (GUI, Команды) через обычный цикл
-            for (KeyBinding k : mc.options.allKeys) {
-                if (k.getTranslationKey().equals("key.meteor-client.open-gui")) {
-                    k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.right.shift"));
-                }
-                if (k.getTranslationKey().equals("key.meteor-client.open-commands")) {
-                    k.setBoundKey(InputUtil.fromTranslationKey("key.keyboard.period"));
-                }
+        // Возвращаем команды
+        try {
+            Commands.get().setPrefix(".");
+        } catch (Exception ignored) {}
+
+        // Возвращаем бинды (если они были скрыты)
+        if (clearKeybinds.get() && originalKeys != null) {
+            try {
+                Field field = GameOptions.class.getDeclaredField("allKeys");
+                field.setAccessible(true);
+                field.set(mc.options, originalKeys.clone());
+                mc.options.write();
+                originalKeys = null;
+            } catch (Exception e) {
+                e.printStackTrace();
             }
-            mc.options.write();
         }
         
-        if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§a[Panic] §fBinds restored. Folders remain hidden."), false);
-    }
-
-    // Удаляет все упоминания читов из options.txt
-    private void cleanOptionsFile() {
-        File optionsFile = new File(mc.runDirectory, "options.txt");
-        if (!optionsFile.exists()) return;
-
-        try {
-            List<String> lines = Files.readAllLines(optionsFile.toPath());
-            List<String> newLines = new ArrayList<>();
-
-            for (String line : lines) {
-                // Пропускаем строки, связанные с Meteor, Waypoints, Zoomify и т.д.
-                if (line.startsWith("key_meteor") || 
-                    line.startsWith("key_waypoints") || 
-                    line.startsWith("key_zoomify") || 
-                    line.startsWith("key_zakoopt") || 
-                    line.startsWith("key_open_gui") || 
-                    line.startsWith("key_open_commands")) {
-                    continue;
-                }
-                newLines.add(line);
-            }
-
-            // Перезаписываем файл
-            Files.write(optionsFile.toPath(), newLines, StandardOpenOption.TRUNCATE_EXISTING);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+        if (mc.player != null) mc.player.sendMessage(net.minecraft.text.Text.literal("§a[Panic] §fRestored."), false);
     }
 
     private void deleteDirectory(File dir) {
@@ -155,51 +172,5 @@ public class ZPanic extends Module {
             }
         }
         try { dir.delete(); } catch (Exception ignored) {}
-    }
-
-    // Надежное перемещение папок через NIO (работает даже при блокировке)
-    private void moveFoldersToHidden() {
-        File gameDir = mc.runDirectory;
-        File meteorClientDir = new File(gameDir, "meteor-client");
-        File meteoristDir = new File(gameDir, "meteorist");
-        File hiddenDir = new File(gameDir, ".cache_data");
-
-        if (!hiddenDir.exists()) hiddenDir.mkdirs();
-
-        try {
-            if (meteorClientDir.exists()) {
-                Path source = meteorClientDir.toPath();
-                Path target = new File(hiddenDir, "meteor-client").toPath();
-                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-            if (meteoristDir.exists()) {
-                Path source = meteoristDir.toPath();
-                Path target = new File(hiddenDir, "meteorist").toPath();
-                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (IOException e) {
-            // Если Windows все еще блокирует папку, пробуем скопировать содержимое и удалить оригинал
-            try {
-                if (meteorClientDir.exists()) copyDirectory(meteorClientDir, new File(hiddenDir, "meteor-client"));
-                if (meteoristDir.exists()) copyDirectory(meteoristDir, new File(hiddenDir, "meteorist"));
-            } catch (IOException ex) {
-                ex.printStackTrace();
-            }
-        }
-    }
-
-    private void copyDirectory(File source, File target) throws IOException {
-        if (!target.exists()) target.mkdirs();
-        File[] files = source.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                File newFile = new File(target, file.getName());
-                if (file.isDirectory()) {
-                    copyDirectory(file, newFile);
-                } else {
-                    Files.copy(file.toPath(), newFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-        }
     }
 }
