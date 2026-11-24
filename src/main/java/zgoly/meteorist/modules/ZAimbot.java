@@ -14,6 +14,8 @@ import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -33,11 +35,13 @@ public class ZAimbot extends Module {
     private final Setting<Set<EntityType<?>>> entities = sgGeneral.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
+    // Range отвечает ТОЛЬКО за поворот камеры
     private final Setting<Double> range = sgGeneral.add(new DoubleSetting.Builder()
-            .name("range").description("Range for camera rotation.").defaultValue(4.5).min(0).sliderMax(6).build()
+            .name("range").description("Distance to rotate camera.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
+    // AggroRange отвечает за запоминание цели
     private final Setting<Double> aggroRange = sgGeneral.add(new DoubleSetting.Builder()
-            .name("aggro-range").description("Distance to remember the target (Aggro).").defaultValue(10.0).min(1.0).sliderMax(20.0).build()
+            .name("aggro-range").description("Distance to remember and lock target.").defaultValue(10.0).min(1.0).sliderMax(20.0).build()
     );
     private final Setting<Double> fov = sgGeneral.add(new DoubleSetting.Builder()
             .name("fov").description("Field of view.").defaultValue(90).min(10).sliderMax(360).build()
@@ -56,13 +60,16 @@ public class ZAimbot extends Module {
             .name("only-x-coordinate").description("Aim only horizontally.").defaultValue(false).build()
     );
     private final Setting<AimMode> aimMode = sgAim.add(new EnumSetting.Builder<AimMode>()
-            .name("aim-mode").description("How to aim at the hitbox.").defaultValue(AimMode.Random).build()
+            .name("aim-mode").description("Targeting logic.").defaultValue(AimMode.Random).build()
+    );
+    private final Setting<Boolean> randomizeTarget = sgAim.add(new BoolSetting.Builder()
+            .name("randomize-target").description("Adds random offset (works with Closest Point).").defaultValue(true).build()
     );
     private final Setting<Double> aimSpeed = sgAim.add(new DoubleSetting.Builder()
             .name("speed").description("Speed of smooth aim.").defaultValue(3.0).min(0.1).sliderMax(10.0).build()
     );
     private final Setting<Double> targetLockTime = sgAim.add(new DoubleSetting.Builder()
-            .name("target-lock-time").description("Target lock seconds.").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
+            .name("target-lock-time").description("How long to remember the target (seconds).").defaultValue(5.0).min(0.0).sliderMax(10.0).build()
     );
 
     private final Random random = new Random();
@@ -94,10 +101,9 @@ public class ZAimbot extends Module {
         Entity target = null;
         long currentTime = System.currentTimeMillis();
 
-        // Проверяем агро-цель
+        // 1. Проверяем, есть ли у нас "Агро" цель
         if (lockedTarget != null) {
-            if (lockedTarget.isAlive() && PlayerUtils.isWithin(lockedTarget, aggroRange.get()) 
-                && calculateFov(mc.player, lockedTarget) <= fov.get()
+            if (lockedTarget.isAlive() && PlayerUtils.isWithin(lockedTarget, aggroRange.get())
                 && (currentTime - lockedTargetTime < targetLockTime.get() * 1000)) {
                 target = lockedTarget;
             } else {
@@ -105,7 +111,7 @@ public class ZAimbot extends Module {
             }
         }
 
-        // Если нет агро, ищем новую
+        // 2. Если Агро нет, ищем новую в радиусе AggroRange
         if (target == null) {
             target = TargetUtils.get(this::entityCheck, SortPriority.ClosestAngle);
             if (target != null) {
@@ -117,6 +123,12 @@ public class ZAimbot extends Module {
 
         if (target == null) return;
 
+        // 3. Ограничение наводки. Если цель дальше Range, мы просто запомнили её, но не крутим камеру
+        if (!PlayerUtils.isWithin(target, range.get())) return;
+        
+        // Проверка FOV для поворота камеры
+        if (calculateFov(mc.player, target) > fov.get()) return;
+
         aim(mc.player, target);
     }
 
@@ -124,40 +136,49 @@ public class ZAimbot extends Module {
         Box box = target.getBoundingBox();
         Vec3d eyePos = player.getEyePos();
         
-        // Выбор точки прицеливания
-        if (currentAimPoint == null || random.nextInt(10) < 2) {
-            if (aimMode.get() == AimMode.Random) {
+        if (aimMode.get() == AimMode.EdgeOnly) {
+            // Если прицел уже в хитбоксе (или попал в него), ничего не делаем
+            HitResult hit = mc.crosshairTarget;
+            if (hit != null && hit.getType() == HitResult.Type.ENTITY) {
+                if (((EntityHitResult) hit).getEntity() == target) {
+                    return; 
+                }
+            }
+            
+            // Если прицел вне хитбокса, ведем к ближайшей точке
+            double x = MathHelper.clamp(eyePos.x, box.minX, box.maxX);
+            double y = MathHelper.clamp(eyePos.y, box.minY, box.maxY);
+            double z = MathHelper.clamp(eyePos.z, box.minZ, box.maxZ);
+            
+            if (randomizeTarget.get()) {
+                x += (random.nextDouble() - 0.5) * 0.1;
+                y += (random.nextDouble() - 0.5) * 0.1;
+                z += (random.nextDouble() - 0.5) * 0.1;
+            }
+            
+            currentAimPoint = new Vec3d(x, y, z);
+            
+        } else if (aimMode.get() == AimMode.ClosestPoint) {
+            // Ближайшая точка на хитбоксе
+            double x = MathHelper.clamp(eyePos.x, box.minX, box.maxX);
+            double y = MathHelper.clamp(eyePos.y, box.minY, box.maxY);
+            double z = MathHelper.clamp(eyePos.z, box.minZ, box.maxZ);
+            
+            if (randomizeTarget.get()) {
+                x += (random.nextDouble() - 0.5) * 0.2;
+                y += (random.nextDouble() - 0.5) * 0.2;
+                z += (random.nextDouble() - 0.5) * 0.2;
+            }
+            currentAimPoint = new Vec3d(x, y, z);
+            
+        } else {
+            // Random (как было)
+            if (currentAimPoint == null || random.nextInt(10) < 2) {
                 double yBias = (random.nextDouble() + random.nextDouble() - 1.0) * 0.3 + 0.5; 
                 double y = target.getY() + target.getHeight() * yBias;
                 double x = target.getX() + (random.nextDouble() - 0.5) * 0.3;
                 double z = target.getZ() + (random.nextDouble() - 0.5) * 0.3;
                 currentAimPoint = new Vec3d(x, y, z);
-            } else if (aimMode.get() == AimMode.ClosestPoint) {
-                // Ближайшая точка к камере
-                currentAimPoint = new Vec3d(
-                    MathHelper.clamp(eyePos.x, box.minX, box.maxX),
-                    MathHelper.clamp(eyePos.y, box.minY, box.maxY),
-                    MathHelper.clamp(eyePos.z, box.minZ, box.maxZ)
-                );
-            } else if (aimMode.get() == AimMode.EdgeOnly) {
-                // Если прицел уже в хитбоксе, не двигаем. Если нет - ведем к краю.
-                Vec3d lookVec = player.getRotationVec(1.0f);
-                // Проверка, пересекает ли луч хитбокс
-                boolean inside = box.contains(eyePos) || box.raycast(eyePos, eyePos.add(lookVec.multiply(range.get()))).isPresent();
-                
-                if (inside && currentAimPoint == null) {
-                    currentAimPoint = new Vec3d(
-                        MathHelper.clamp(eyePos.x, box.minX, box.maxX),
-                        MathHelper.clamp(eyePos.y, box.minY, box.maxY),
-                        MathHelper.clamp(eyePos.z, box.minZ, box.maxZ)
-                    );
-                } else if (!inside) {
-                    currentAimPoint = new Vec3d(
-                        MathHelper.clamp(eyePos.x, box.minX, box.maxX),
-                        MathHelper.clamp(eyePos.y, box.minY, box.maxY),
-                        MathHelper.clamp(eyePos.z, box.minZ, box.maxZ)
-                    );
-                }
             }
         }
 
@@ -188,9 +209,8 @@ public class ZAimbot extends Module {
     private boolean entityCheck(Entity entity) {
         if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
         if (!entity.isAlive()) return false;
-        if (!PlayerUtils.isWithin(entity, aggroRange.get())) return false;
+        if (!PlayerUtils.isWithin(entity, aggroRange.get())) return false; // Ищем в радиусе агро
         if (!entities.get().contains(entity.getType())) return false;
-        if (calculateFov(mc.player, entity) > fov.get()) return false;
         if (ignoreFriends.get() && entity instanceof PlayerEntity player && !Friends.get().shouldAttack(player)) return false;
         return ignoreWalls.get() || PlayerUtils.canSeeEntity(entity);
     }
