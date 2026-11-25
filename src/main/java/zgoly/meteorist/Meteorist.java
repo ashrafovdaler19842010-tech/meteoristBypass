@@ -111,7 +111,6 @@ public class Meteorist extends MeteorAddon {
         Modules.get().add(new ZAutoSprint());
         Modules.get().add(new ZAutoTotem());
         Modules.get().add(new ZESP());
-        Modules.get().add(new ZHideBinds());
         Modules.get().add(new ZKillaura());
         Modules.get().add(new ZoomPlus());
         // ZPanic УДАЛЕН
