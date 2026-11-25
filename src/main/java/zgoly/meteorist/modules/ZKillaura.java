@@ -6,11 +6,13 @@ import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.systems.modules.combat.KillAura;
+import meteordevelopment.meteorclient.utils.entity.EntityAgeTest;
 import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.OwnableEntity;
 import net.minecraft.world.effect.MobEffects;
@@ -19,8 +21,8 @@ import net.minecraft.world.entity.monster.ZombifiedPiglin;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.util.Mth;
@@ -39,13 +41,13 @@ public class ZKillaura extends Module {
 
     // --- Filter ---
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
-            .name("entities").description("Entities to attack.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
+            .name("entities").description("Entities to attack.").onlyAttackable().defaultValue(EntityTypes.PLAYER).build()
     );
     private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
             .name("range").description("The maximum range the entity can be to attack it.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
-    private final Setting<KillAura.EntityAge> mobAgeFilter = sgFilter.add(new EnumSetting.Builder<KillAura.EntityAge>()
-            .name("mob-age-filter").description("Determines the age of the mobs to target.").defaultValue(KillAura.EntityAge.Adult).build()
+    private final Setting<EntityAgeTest> mobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
+            .name("mob-age-filter").description("Determines the age of the mobs to target.").defaultValue(EntityAgeTest.Adult).build()
     );
     private final Setting<Boolean> ignoreNamed = sgFilter.add(new BoolSetting.Builder()
             .name("ignore-named").description("Whether or not to attack mobs with a name.").defaultValue(false).build()
@@ -133,9 +135,7 @@ public class ZKillaura extends Module {
             .name("swap-back-delay-max-random-value").description("Max randomized delay before swapping back.").defaultValue(5).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.RandomValue).build()
     );
 
-    // ==========================================
-    // НОВАЯ ГРУППА: НАСТРОЙКИ МИССОВ
-    // ==========================================
+    // --- Crit Miss ---
     private final Setting<Boolean> missOnCrit = sgMiss.add(new BoolSetting.Builder()
             .name("miss-on-crit").description("Специально промахиваться на критах.").defaultValue(true).build()
     );
@@ -193,7 +193,7 @@ public class ZKillaura extends Module {
         // --- Логика разбития щита ---
         if (shieldMode.get() == ShieldMode.Break) {
             if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
-                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
+                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.is(ItemTags.AXES));
                 if (axe.found()) {
                     shieldState = ShieldState.SwapAxe;
                     swapTimer = calculateDelay(swapDelayMode.get(), swapDelayValue.get(), swapDelayMinRandomValue.get(), swapDelayMaxRandomValue.get());
@@ -202,7 +202,7 @@ public class ZKillaura extends Module {
             swapAxeState:
             if (shieldState == ShieldState.SwapAxe) {
                 if (swapTimer-- > 0) break swapAxeState;
-                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
+                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.is(ItemTags.AXES));
                 if (axe.found() && livingEntity.isBlocking()) {
                     originalSlot = mc.player.getInventory().getSelectedSlot();
                     InvUtils.swap(axe.slot(), false);
@@ -215,7 +215,9 @@ public class ZKillaura extends Module {
                 if (hitTimer-- > 0) break attackState;
                 if (livingEntity.isBlocking()) {
                     mc.gameMode.attack(mc.player, livingEntity);
-                    if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND);
+                    if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND,
+                            mc.player.getItemInHand(InteractionHand.MAIN_HAND).getAttackAnimation(),
+                            false);
                     shieldState = ShieldState.SwapBack;
                     swapBackTimer = calculateDelay(swapBackDelayMode.get(), swapBackDelayValue.get(), swapBackDelayMinRandomValue.get(), swapBackDelayMaxRandomValue.get());
                 } else {
@@ -246,9 +248,7 @@ public class ZKillaura extends Module {
         float hitSpeed = currHitSpeedMode == HitSpeedMode.Value ? hitSpeedValue.get().floatValue() : randomHitSpeedFloat;
         if (currHitSpeedMode != HitSpeedMode.None && (mc.player.getAttackStrengthScale(hitSpeed) * 17.0F) < 16) return;
 
-        // ==========================================
-        // НОВАЯ ЛОГИКА: РАНДОМНЫЙ МИСС НА КРИТАХ
-        // ==========================================
+        // --- Рандомный мисс на критах ---
         boolean isCrit = mc.player.fallDistance > 0.0F
                 && !mc.player.onGround()
                 && !mc.player.onClimbable()
@@ -265,30 +265,30 @@ public class ZKillaura extends Module {
                 int max = missMaxHits.get();
                 if (max <= min) max = min + 1;
                 nextMissTarget = random.nextInt((max - min) + 1) + min;
-                return; 
+                return;
             }
         }
 
-        // ==========================================
-        // АТАКА + ИНТЕГРАЦИЯ С АВТОСПРИНТОМ
-        // ==========================================
+        // --- Атака + интеграция с автоспринтом ---
         ZAutoSprint autoSprint = Modules.get().get(ZAutoSprint.class);
         if (autoSprint != null && autoSprint.isActive()) {
             autoSprint.performWTap(livingEntity);
         } else {
             mc.gameMode.attack(mc.player, livingEntity);
-            if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND);
+            if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND,
+                    mc.player.getItemInHand(InteractionHand.MAIN_HAND).getAttackAnimation(),
+                    false);
         }
 
         if (currOnFallMode == OnFallMode.RandomValue) {
             float min = Math.min(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
             float max = Math.max(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
-            randomOnFallFloat = min + mc.level.random.nextFloat() * (max - min);
+            randomOnFallFloat = min + mc.level.getRandom().nextFloat() * (max - min);
         }
         if (currHitSpeedMode == HitSpeedMode.RandomValue) {
             float min = Math.min(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
             float max = Math.max(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
-            randomHitSpeedFloat = min + mc.level.random.nextFloat() * (max - min);
+            randomHitSpeedFloat = min + mc.level.getRandom().nextFloat() * (max - min);
         }
     }
 
@@ -301,7 +301,9 @@ public class ZKillaura extends Module {
         mc.player.setXRot(Mth.clamp(oldPitch + (random.nextBoolean() ? 20 : -20), -90f, 90f));
 
         mc.gameMode.attack(mc.player, target);
-        if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND);
+        if (swingHand.get()) mc.player.swing(InteractionHand.MAIN_HAND,
+                mc.player.getItemInHand(InteractionHand.MAIN_HAND).getAttackAnimation(),
+                false);
 
         mc.player.setYRot(oldYaw);
         mc.player.setXRot(oldPitch);
@@ -316,7 +318,7 @@ public class ZKillaura extends Module {
     private int calculateDelay(DelayMode mode, int value, int minRandom, int maxRandom) {
         return switch (mode) {
             case Value -> value;
-            case RandomValue -> minRandom + mc.level.random.nextInt(maxRandom - minRandom + 1);
+            case RandomValue -> minRandom + mc.level.getRandom().nextInt(maxRandom - minRandom + 1);
         };
     }
 
