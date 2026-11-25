@@ -5,10 +5,8 @@
   "client": [
     "ClientRecipeBookAccessor",
     "DisconnectedScreenMixin",
-    "GameOptionsAccessor",
     "GameRendererMixin",
     "IngredientAccessor",
-    "KeybindsScreenMixin",
     "MobSpawnerLogicAccessor",
     "ModulesScreenMixin",
     "MouseMixin",
