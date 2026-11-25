@@ -113,10 +113,11 @@ public class Meteorist extends MeteorAddon {
         
         // --- Z-МОДУЛИ ---
         Modules.get().add(new ZAimbot());
-        Modules.get().add(new ZAutoSprint()); // ДОБАВЛЕН АВТОСПРИНТ
+        Modules.get().add(new ZAutoSprint()); // Тут теперь автоспринт, W-Tap и NoJumpDelay
         Modules.get().add(new ZAutoTotem());
+        Modules.get().add(new ZESP());        // Добавлен ESP
+        Modules.get().add(new ZHideBinds());  // Модуль для скрытия биндов
         Modules.get().add(new ZKillaura());
-        Modules.get().add(new ZPanic());      // ДОБАВЛЕНА ПАНИКА
         Modules.get().add(new ZoomPlus());
 
         // Dev modules
