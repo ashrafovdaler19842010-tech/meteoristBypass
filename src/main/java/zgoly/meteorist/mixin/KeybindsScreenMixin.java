@@ -13,7 +13,7 @@ import java.util.Arrays;
 @Mixin(KeybindsScreen.class)
 public class KeybindsScreenMixin {
 
-    @ModifyVariable(method = "init", at = @At("STORE"), ordinal = 0)
+    @ModifyVariable(method = "init()V", at = @At("STORE"), ordinal = 0)
     private KeyBinding[] meteorist$hideKeybinds(KeyBinding[] original) {
         ZHideBinds hideModule = Modules.get().get(ZHideBinds.class);
         
