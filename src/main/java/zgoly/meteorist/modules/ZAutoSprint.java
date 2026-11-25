@@ -14,7 +14,6 @@ public class ZAutoSprint extends Module {
     private final Setting<Boolean> autoSprint = sgGeneral.add(new BoolSetting.Builder()
             .name("auto-sprint").description("Автоматический спринт.").defaultValue(true).build()
     );
-    
     private final Setting<Boolean> wTap = sgGeneral.add(new BoolSetting.Builder()
             .name("w-tap").description("Сброс спринта перед ударом.").defaultValue(true).build()
     );
@@ -40,12 +39,13 @@ public class ZAutoSprint extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
 
-        // Обработка W-Tap
         if (isWTapPending) {
             if (System.currentTimeMillis() >= wTapEndTime) {
                 if (pendingWTapTarget != null && mc.level.getEntity(pendingWTapTarget.getId()) != null) {
                     mc.gameMode.attack(mc.player, pendingWTapTarget);
-                    mc.player.swing(InteractionHand.MAIN_HAND);
+                    mc.player.swing(InteractionHand.MAIN_HAND,
+                            mc.player.getItemInHand(InteractionHand.MAIN_HAND).getAttackAnimation(),
+                            false);
                 }
                 mc.options.keySprint.setDown(true);
                 mc.player.setSprinting(true);
@@ -55,8 +55,7 @@ public class ZAutoSprint extends Module {
             return;
         }
 
-        // Автоспринт
-        if (autoSprint.get() && mc.player.onGround() && mc.player.input.hasForwardImpulse() 
+        if (autoSprint.get() && mc.player.onGround() && mc.player.input.hasForwardImpulse()
                 && !mc.player.isUsingItem() && mc.player.getFoodData().getFoodLevel() > 6) {
             mc.player.setSprinting(true);
         }
@@ -71,7 +70,9 @@ public class ZAutoSprint extends Module {
             wTapEndTime = System.currentTimeMillis() + wTapMs.get();
         } else {
             mc.gameMode.attack(mc.player, target);
-            mc.player.swing(InteractionHand.MAIN_HAND);
+            mc.player.swing(InteractionHand.MAIN_HAND,
+                    mc.player.getItemInHand(InteractionHand.MAIN_HAND).getAttackAnimation(),
+                    false);
         }
     }
 }
