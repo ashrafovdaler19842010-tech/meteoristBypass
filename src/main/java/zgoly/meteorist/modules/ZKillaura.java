@@ -16,7 +16,7 @@ import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.OwnableEntity;
 import net.minecraft.world.effect.MobEffects;
-import net.minecraft.world.entity.monster.EnderMan;
+import net.minecraft.world.entity.monster.Enderman;
 import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.animal.wolf.Wolf;
@@ -332,7 +332,7 @@ public class ZKillaura extends Module {
         }
         if (ignorePassive.get()) {
             switch (entity) {
-                case EnderMan enderman when !enderman.isCreepy() -> { return false; }
+                case Enderman enderman when !enderman.isCreepy() -> { return false; }
                 case ZombifiedPiglin piglin when !piglin.isAggressive() -> { return false; }
                 case Wolf wolf when !wolf.isAggressive() -> { return false; }
                 default -> {}
