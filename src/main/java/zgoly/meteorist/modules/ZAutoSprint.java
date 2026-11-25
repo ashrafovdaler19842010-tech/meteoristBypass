@@ -14,11 +14,14 @@ public class ZAutoSprint extends Module {
     private final Setting<Boolean> autoSprint = sgGeneral.add(new BoolSetting.Builder()
             .name("auto-sprint").description("Автоматический спринт.").defaultValue(true).build()
     );
+    private final Setting<Boolean> noJumpDelay = sgGeneral.add(new BoolSetting.Builder()
+            .name("no-jump-delay").description("Убирает задержку между прыжками.").defaultValue(true).build()
+    );
     private final Setting<Boolean> wTap = sgGeneral.add(new BoolSetting.Builder()
             .name("w-tap").description("Сброс спринта перед ударом.").defaultValue(true).build()
     );
     private final Setting<Integer> wTapMs = sgGeneral.add(new IntSetting.Builder()
-            .name("w-tap-ms").description("Задержка сброса спринта в миллисекундах (1-50 мс).").defaultValue(30).sliderRange(1, 50).visible(wTap::get).build()
+            .name("w-tap-ms").description("Задержка сброса спринта (мс).").defaultValue(30).sliderRange(1, 50).visible(wTap::get).build()
     );
 
     private boolean isWTapPending = false;
@@ -26,7 +29,7 @@ public class ZAutoSprint extends Module {
     private LivingEntity pendingWTapTarget = null;
 
     public ZAutoSprint() {
-        super(Meteorist.CATEGORY, "z-auto-sprint", "Автоспринт и W-Tap.");
+        super(Meteorist.CATEGORY, "z-auto-sprint", "Автоспринт, NoJumpDelay и W-Tap.");
     }
 
     @Override
@@ -39,6 +42,7 @@ public class ZAutoSprint extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
+        // 1. Обработка W-Tap
         if (isWTapPending) {
             if (System.currentTimeMillis() >= wTapEndTime) {
                 if (pendingWTapTarget != null && mc.world.getEntityById(pendingWTapTarget.getId()) != null) {
@@ -54,11 +58,18 @@ public class ZAutoSprint extends Module {
             return;
         }
 
+        // 2. NoJumpDelay
+        if (noJumpDelay.get()) {
+            mc.player.jumpingCooldown = 0; 
+        }
+
+        // 3. Автоспринт
         if (autoSprint.get() && mc.player.isOnGround() && mc.player.input.hasForwardMovement() && !mc.player.isUsingItem() && mc.player.getHungerManager().getFoodLevel() > 6) {
             mc.player.setSprinting(true);
         }
     }
 
+    // Вызывается из ZKillaura
     public void performWTap(LivingEntity target) {
         if (wTap.get() && mc.player.isSprinting()) {
             mc.options.sprintKey.setPressed(false);
