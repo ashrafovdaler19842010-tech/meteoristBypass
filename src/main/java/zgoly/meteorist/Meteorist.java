@@ -137,6 +137,7 @@ public class Meteorist extends MeteorAddon {
         Modules.get().add(new RangeActions());
         Modules.get().add(new SignSearch());
         Modules.get().add(new ZAimbot());
+        Modules.get().add(new ZAutoSprint()); // <--- ДОБАВЛЕНО СЮДА
         Modules.get().add(new ZAutoTotem());
         Modules.get().add(new ZKillaura());
         Modules.get().add(new ZoomPlus());
