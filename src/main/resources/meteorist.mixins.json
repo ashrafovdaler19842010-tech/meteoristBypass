@@ -5,6 +5,7 @@
   "client": [
     "ClientRecipeBookAccessor",
     "DisconnectedScreenMixin",
+    "GameOptionsAccessor",
     "GameRendererMixin",
     "IngredientAccessor",
     "KeybindsScreenMixin",
