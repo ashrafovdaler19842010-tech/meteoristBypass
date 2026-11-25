@@ -61,10 +61,10 @@ public class ZAimbot extends Module {
     
     // --- РАЗДЕЛЬНЫЕ СКОРОСТИ ---
     private final Setting<Double> speedX = sgAim.add(new DoubleSetting.Builder()
-            .name("speed-x").description("Скорость поворота по горизонтали (Yaw).").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
+            .name("speed-x").description("Скорость по горизонтали (Yaw). 0 = выкл.").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
     );
     private final Setting<Double> speedY = sgAim.add(new DoubleSetting.Builder()
-            .name("speed-y").description("Скорость поворота по вертикали (Pitch).").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
+            .name("speed-y").description("Скорость по вертикали (Pitch). 0 = выкл.").defaultValue(3.0).min(0.0).sliderMax(10.0).build()
     );
 
     private final Setting<Double> targetLockTime = sgAim.add(new DoubleSetting.Builder()
@@ -73,11 +73,11 @@ public class ZAimbot extends Module {
 
     private final Random random = new Random();
     private Vec3d currentAimPoint = null;
-    private LivingEntity lockedTarget = null;
+    public LivingEntity lockedTarget = null;
     private long lockedTargetTime = 0;
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Aimbot with sticky target and separate X/Y speeds.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Aimbot with separate X/Y speeds.");
     }
 
     @Override
@@ -178,7 +178,7 @@ public class ZAimbot extends Module {
         float deltaYaw = yawDifference * factorX;
         float deltaPitch = pitchDifference * factorY;
 
-        // Сглаживание под сенсу
+        // Сглаживание (GCD)
         float sens = mc.options.getMouseSensitivity().getValue().floatValue();
         float f = sens * 0.6f + 0.2f;
         float gcd = f * f * f * 1.2f; 
