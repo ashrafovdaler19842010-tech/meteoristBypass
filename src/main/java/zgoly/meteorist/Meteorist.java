@@ -66,24 +66,19 @@ public class Meteorist extends MeteorAddon {
 
     @Override
     public void onInitialize() {
-        // Log random message
         Random random = new Random();
         LOG.info(MESSAGES[random.nextInt(MESSAGES.length)]);
 
-        // Icons
         ARROW_UP = GuiRenderer.addTexture(identifier("textures/icons/gui/arrow_up.png"));
         ARROW_DOWN = GuiRenderer.addTexture(identifier("textures/icons/gui/arrow_down.png"));
         EYE = GuiRenderer.addTexture(identifier("textures/icons/gui/eye.png"));
 
-        // Config
         MeteoristConfigScreen.init();
 
-        // Factories
         LOG.info("Registering custom factories...");
         StringPairSetting.register();
         ItemsSetting.register();
 
-        // Modules
         LOG.info("Registering modules...");
         Modules.get().add(new AutoCrafter());
         Modules.get().add(new AutoFeed());
@@ -113,24 +108,22 @@ public class Meteorist extends MeteorAddon {
         
         // --- Z-МОДУЛИ ---
         Modules.get().add(new ZAimbot());
-        Modules.get().add(new ZAutoSprint()); // Тут теперь автоспринт, W-Tap и NoJumpDelay
+        Modules.get().add(new ZAutoSprint());
         Modules.get().add(new ZAutoTotem());
-        Modules.get().add(new ZESP());        // Добавлен ESP
-        Modules.get().add(new ZHideBinds());  // Модуль для скрытия биндов
+        Modules.get().add(new ZESP());
+        Modules.get().add(new ZHideBinds());
         Modules.get().add(new ZKillaura());
         Modules.get().add(new ZoomPlus());
+        // ZPanic УДАЛЕН
 
-        // Dev modules
         Modules.get().add(new DocsGenerator());
 
-        // Commands
         LOG.info("Registering commands...");
         Commands.add(new DataCommand());
         Commands.add(new InstructionsCommand());
         Commands.add(new InteractCommand());
         Commands.add(new PlayersInfoCommand());
 
-        // HUD text presets
         LOG.info("Registering HUD text presets...");
         MeteoristStarscript.init();
         Hud.get().register(TextPresets.INFO);
