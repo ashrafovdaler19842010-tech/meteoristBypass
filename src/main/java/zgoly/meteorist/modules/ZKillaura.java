@@ -4,168 +4,358 @@ import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.utils.player.PlayerUtils;
+import meteordevelopment.meteorclient.systems.modules.Modules;
+import meteordevelopment.meteorclient.systems.modules.combat.KillAura;
+import meteordevelopment.meteorclient.utils.player.FindItemResult;
+import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.Tameable;
 import net.minecraft.entity.effect.StatusEffects;
+import net.minecraft.entity.mob.EndermanEntity;
+import net.minecraft.entity.mob.ZombifiedPiglinEntity;
+import net.minecraft.entity.passive.AnimalEntity;
+import net.minecraft.entity.passive.WolfEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.AxeItem;
 import net.minecraft.util.Hand;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.MathHelper;
 import zgoly.meteorist.Meteorist;
+import zgoly.meteorist.utils.MeteoristUtils;
 
 import java.util.Random;
 import java.util.Set;
 
 public class ZKillaura extends Module {
-    public enum MissMode { Random, Interval }
+    private final SettingGroup sgFilter = settings.createGroup("Filter");
+    private final SettingGroup sgAttack = settings.createGroup("Attack");
+    private final SettingGroup sgShield = settings.createGroup("Shield");
+    private final SettingGroup sgMiss = settings.createGroup("Crit Miss");
+    private final SettingGroup sgVisual = settings.createGroup("Visual");
 
-    private final SettingGroup sgGeneral = settings.getDefaultGroup();
-    private final SettingGroup sgMiss = settings.createGroup("Miss Settings");
-
-    // --- General Settings ---
-    private final Setting<Set<EntityType<?>>> entities = sgGeneral.add(new EntityTypeListSetting.Builder()
+    // --- Filter ---
+    private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to attack.").onlyAttackable().defaultValue(EntityType.PLAYER).build()
     );
-    private final Setting<Double> range = sgGeneral.add(new DoubleSetting.Builder()
-            .name("range").description("Attack range.").defaultValue(3.0).min(1.0).sliderMax(6.0).build()
+    private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
+            .name("range").description("The maximum range the entity can be to attack it.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
-    private final Setting<Integer> cps = sgGeneral.add(new IntSetting.Builder()
-            .name("cps").description("Clicks per second.").defaultValue(12).min(1).sliderMax(20).build()
+    private final Setting<KillAura.EntityAge> mobAgeFilter = sgFilter.add(new EnumSetting.Builder<KillAura.EntityAge>()
+            .name("mob-age-filter").description("Determines the age of the mobs to target.").defaultValue(KillAura.EntityAge.Adult).build()
     );
-    private final Setting<Boolean> ignoreFriends = sgGeneral.add(new BoolSetting.Builder()
-            .name("ignore-friends").defaultValue(true).build()
+    private final Setting<Boolean> ignoreNamed = sgFilter.add(new BoolSetting.Builder()
+            .name("ignore-named").description("Whether or not to attack mobs with a name.").defaultValue(false).build()
+    );
+    private final Setting<Boolean> ignorePassive = sgFilter.add(new BoolSetting.Builder()
+            .name("ignore-passive").description("Will only attack passive mobs if they are targeting you.").defaultValue(true).build()
+    );
+    private final Setting<Boolean> ignoreTamed = sgFilter.add(new BoolSetting.Builder()
+            .name("ignore-tamed").description("Will avoid attacking mobs you tamed.").defaultValue(false).build()
+    );
+    private final Setting<Boolean> ignoreCreative = sgFilter.add(new BoolSetting.Builder()
+            .name("ignore-creative").description("Will avoid attacking players in creative mode.").defaultValue(true).build()
+    );
+    private final Setting<Boolean> ignoreFriends = sgFilter.add(new BoolSetting.Builder()
+            .name("ignore-friends").description("Will avoid attacking players on your friends list.").defaultValue(true).build()
+    );
+    private final Setting<Boolean> ignoreWalls = sgFilter.add(new BoolSetting.Builder()
+            .name("ignore-walls").description("Whether or not to attack mobs through walls.").defaultValue(false).build()
     );
 
-    // --- Miss Settings ---
+    // --- Attack ---
+    private final Setting<OnFallMode> onFallMode = sgAttack.add(new EnumSetting.Builder<OnFallMode>()
+            .name("on-fall-mode").description("Chooses an attack strategy when falling to maximize critical damage.").defaultValue(OnFallMode.Value).build()
+    );
+    private final Setting<Double> onFallValue = sgAttack.add(new DoubleSetting.Builder()
+            .name("on-fall-value").description("Defines a specific value for attacking while falling.").min(0).defaultValue(0.25).sliderMax(1).visible(() -> onFallMode.get() == OnFallMode.Value).build()
+    );
+    private final Setting<Double> onFallMinRandomValue = sgAttack.add(new DoubleSetting.Builder()
+            .name("on-fall-min-random-value").description("Min randomized value for on-fall.").min(0).defaultValue(0.2).sliderMax(1).visible(() -> onFallMode.get() == OnFallMode.RandomValue).build()
+    );
+    private final Setting<Double> onFallMaxRandomValue = sgAttack.add(new DoubleSetting.Builder()
+            .name("on-fall-max-random-value").description("Max randomized value for on-fall.").min(0).defaultValue(0.4).sliderMax(1).visible(() -> onFallMode.get() == OnFallMode.RandomValue).build()
+    );
+    private final Setting<HitSpeedMode> hitSpeedMode = sgAttack.add(new EnumSetting.Builder<HitSpeedMode>()
+            .name("hit-speed-mode").description("Selects a hit speed mode for attacking.").defaultValue(HitSpeedMode.Value).build()
+    );
+    private final Setting<Double> hitSpeedValue = sgAttack.add(new DoubleSetting.Builder()
+            .name("hit-speed-value").description("Defines a specific hit speed value for attacking.").defaultValue(0.0).sliderRange(-10, 10).visible(() -> hitSpeedMode.get() == HitSpeedMode.Value).build()
+    );
+    private final Setting<Double> hitSpeedMinRandomValue = sgAttack.add(new DoubleSetting.Builder()
+            .name("hit-speed-min-random-value").description("Min randomized hit speed.").defaultValue(0.0).sliderRange(-10, 10).visible(() -> hitSpeedMode.get() == HitSpeedMode.RandomValue).build()
+    );
+    private final Setting<Double> hitSpeedMaxRandomValue = sgAttack.add(new DoubleSetting.Builder()
+            .name("hit-speed-max-random-value").description("Max randomized hit speed.").defaultValue(0.0).sliderRange(-10, 10).visible(() -> hitSpeedMode.get() == HitSpeedMode.RandomValue).build()
+    );
+
+    // --- Shield ---
+    private final Setting<ShieldMode> shieldMode = sgShield.add(new EnumSetting.Builder<ShieldMode>()
+            .name("shield-mode").description("Will try and use an axe to break target shields.").defaultValue(ShieldMode.Break).build()
+    );
+    private final Setting<DelayMode> swapDelayMode = sgShield.add(new EnumSetting.Builder<DelayMode>()
+            .name("swap-delay-mode").description("Selects a delay before swapping.").defaultValue(DelayMode.Value).visible(() -> shieldMode.get() == ShieldMode.Break).build()
+    );
+    private final Setting<Integer> swapDelayValue = sgShield.add(new IntSetting.Builder()
+            .name("swap-delay-value").description("Defines a specific delay (in ticks) before swapping.").defaultValue(2).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapDelayMode.get() == DelayMode.Value).build()
+    );
+    private final Setting<Integer> swapDelayMinRandomValue = sgShield.add(new IntSetting.Builder()
+            .name("swap-delay-min-random-value").description("Min randomized delay before swapping.").defaultValue(1).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapDelayMode.get() == DelayMode.RandomValue).build()
+    );
+    private final Setting<Integer> swapDelayMaxRandomValue = sgShield.add(new IntSetting.Builder()
+            .name("swap-delay-max-random-value").description("Max randomized delay before swapping.").defaultValue(5).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapDelayMode.get() == DelayMode.RandomValue).build()
+    );
+    private final Setting<DelayMode> hitDelayMode = sgShield.add(new EnumSetting.Builder<DelayMode>()
+            .name("hit-delay-mode").description("Selects a delay before hitting.").defaultValue(DelayMode.Value).visible(() -> shieldMode.get() == ShieldMode.Break).build()
+    );
+    private final Setting<Integer> hitDelayValue = sgShield.add(new IntSetting.Builder()
+            .name("hit-delay-value").description("Defines a specific delay (in ticks) before hitting.").defaultValue(2).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && hitDelayMode.get() == DelayMode.Value).build()
+    );
+    private final Setting<Integer> hitDelayMinRandomValue = sgShield.add(new IntSetting.Builder()
+            .name("hit-delay-min-random-value").description("Min randomized delay before hitting.").defaultValue(1).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && hitDelayMode.get() == DelayMode.RandomValue).build()
+    );
+    private final Setting<Integer> hitDelayMaxRandomValue = sgShield.add(new IntSetting.Builder()
+            .name("hit-delay-max-random-value").description("Max randomized delay before hitting.").defaultValue(5).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && hitDelayMode.get() == DelayMode.RandomValue).build()
+    );
+    private final Setting<DelayMode> swapBackDelayMode = sgShield.add(new EnumSetting.Builder<DelayMode>()
+            .name("swap-back-delay-mode").description("Selects a delay before swapping back.").defaultValue(DelayMode.Value).visible(() -> shieldMode.get() == ShieldMode.Break).build()
+    );
+    private final Setting<Integer> swapBackDelayValue = sgShield.add(new IntSetting.Builder()
+            .name("swap-back-delay-value").description("Defines a specific delay (in ticks) before swapping back.").defaultValue(2).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.Value).build()
+    );
+    private final Setting<Integer> swapBackDelayMinRandomValue = sgShield.add(new IntSetting.Builder()
+            .name("swap-back-delay-min-random-value").description("Min randomized delay before swapping back.").defaultValue(1).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.RandomValue).build()
+    );
+    private final Setting<Integer> swapBackDelayMaxRandomValue = sgShield.add(new IntSetting.Builder()
+            .name("swap-back-delay-max-random-value").description("Max randomized delay before swapping back.").defaultValue(5).sliderRange(0, 20).visible(() -> shieldMode.get() == ShieldMode.Break && swapBackDelayMode.get() == DelayMode.RandomValue).build()
+    );
+
+    // ==========================================
+    // НОВАЯ ГРУППА: НАСТРОЙКИ МИССОВ
+    // ==========================================
     private final Setting<Boolean> missOnCrit = sgMiss.add(new BoolSetting.Builder()
-            .name("miss-on-crit").description("Специально промахиваться на критах.").defaultValue(false).build()
+            .name("miss-on-crit").description("Специально промахиваться на критах.").defaultValue(true).build()
     );
-    private final Setting<MissMode> missMode = sgMiss.add(new EnumSetting.Builder<MissMode>()
-            .name("miss-mode").description("Random = шанс, Interval = каждый N-й крит.").defaultValue(MissMode.Interval).visible(missOnCrit::get).build()
+    private final Setting<Integer> missMinHits = sgMiss.add(new IntSetting.Builder()
+            .name("miss-min-hits").description("Минимальное кол-во критов перед миссом.").defaultValue(3).min(1).sliderMax(10).visible(missOnCrit::get).build()
     );
-    private final Setting<Integer> missInterval = sgMiss.add(new IntSetting.Builder()
-            .name("miss-interval").description("Каждый какой по счету крит будет промахом.").defaultValue(3).min(1).sliderMax(10).visible(() -> missOnCrit.get() && missMode.get() == MissMode.Interval).build()
-    );
-    private final Setting<Integer> missChance = sgMiss.add(new IntSetting.Builder()
-            .name("miss-chance").description("Шанс промаха на крите (1-100%).").defaultValue(20).min(1).sliderMax(100).visible(() -> missOnCrit.get() && missMode.get() == MissMode.Random).build()
+    private final Setting<Integer> missMaxHits = sgMiss.add(new IntSetting.Builder()
+            .name("miss-max-hits").description("Максимальное кол-во критов перед миссом.").defaultValue(4).min(1).sliderMax(10).visible(missOnCrit::get).build()
     );
     private final Setting<Double> missAngle = sgMiss.add(new DoubleSetting.Builder()
             .name("miss-angle").description("На сколько градусов отвернуть камеру.").defaultValue(45.0).min(10).sliderMax(90).visible(missOnCrit::get).build()
     );
 
+    // --- Visual ---
+    private final Setting<Boolean> swingHand = sgVisual.add(new BoolSetting.Builder()
+            .name("swing-hand").description("Makes hand swing visible client-side.").defaultValue(true).build()
+    );
+
+    float randomOnFallFloat = 0;
+    float randomHitSpeedFloat = 0;
+
+    // Переменные для миссов
     private final Random random = new Random();
     private int currentCrits = 0;
-    private long lastAttackTime = 0;
+    private int nextMissTarget = 3;
+
+    private ShieldState shieldState = ShieldState.Idle;
+    private int swapTimer = 0, hitTimer = 0, swapBackTimer = 0;
+    private int originalSlot = -1;
 
     public ZKillaura() {
-        super(Meteorist.CATEGORY, "z-killaura", "Killaura with crit miss simulation.");
+        super(Meteorist.CATEGORY, "z-kill-aura", "Killaura which only attacks target if you aim at it.");
     }
 
     @Override
     public void onActivate() {
+        randomOnFallFloat = 0;
+        randomHitSpeedFloat = 0;
+        shieldState = ShieldState.Idle;
+        swapTimer = hitTimer = swapBackTimer = 0;
+        originalSlot = -1;
         currentCrits = 0;
-        lastAttackTime = 0;
+        nextMissTarget = random.nextInt(missMaxHits.get() - missMinHits.get() + 1) + missMinHits.get();
     }
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
-        if (mc.player == null || mc.world == null) return;
+        if (mc.player.isDead() || mc.world == null) return;
 
-        // Кулдаун CPS
-        long now = System.currentTimeMillis();
-        if (now - lastAttackTime < (1000 / cps.get())) return;
+        HitResult hitResult = MeteoristUtils.getCrosshairTarget(mc.player, range.get(), ignoreWalls.get(), this::entityCheck);
+        if (hitResult == null || hitResult.getType() != HitResult.Type.ENTITY) return;
 
-        LivingEntity target = getTarget();
-        if (target == null) return;
+        Entity entity = ((EntityHitResult) hitResult).getEntity();
+        LivingEntity livingEntity = (LivingEntity) entity;
 
-        // Проверка, является ли удар критическим
-        boolean isCrit = mc.player.fallDistance > 0.0F 
-                && !mc.player.isOnGround() 
-                && !mc.player.isClimbing() 
-                && !mc.player.isTouchingWater() 
-                && !mc.player.hasStatusEffect(StatusEffects.BLINDNESS) 
-                && !mc.player.hasVehicle();
-
-        // --- ЛОГИКА МИССА ---
-        if (isCrit && missOnCrit.get()) {
-            boolean shouldMiss = false;
-
-            if (missMode.get() == MissMode.Interval) {
-                currentCrits++;
-                if (currentCrits >= missInterval.get()) {
-                    shouldMiss = true;
-                    currentCrits = 0; // Сбрасываем счетчик
-                }
-            } else if (missMode.get() == MissMode.Random) {
-                if (random.nextInt(100) < missChance.get()) {
-                    shouldMiss = true;
+        // --- Логика разбития щита (без изменений) ---
+        if (shieldMode.get() == ShieldMode.Break) {
+            if (shieldState == ShieldState.Idle && livingEntity.isBlocking()) {
+                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
+                if (axe.found()) {
+                    shieldState = ShieldState.SwapAxe;
+                    swapTimer = calculateDelay(swapDelayMode.get(), swapDelayValue.get(), swapDelayMinRandomValue.get(), swapDelayMaxRandomValue.get());
                 }
             }
+            swapAxeState:
+            if (shieldState == ShieldState.SwapAxe) {
+                if (swapTimer-- > 0) break swapAxeState;
+                FindItemResult axe = InvUtils.findInHotbar(stack -> stack.getItem() instanceof AxeItem);
+                if (axe.found() && livingEntity.isBlocking()) {
+                    originalSlot = mc.player.getInventory().getSelectedSlot();
+                    InvUtils.swap(axe.slot(), false);
+                    shieldState = ShieldState.Attack;
+                    hitTimer = calculateDelay(hitDelayMode.get(), hitDelayValue.get(), hitDelayMinRandomValue.get(), hitDelayMaxRandomValue.get());
+                } else { resetShield(); }
+            }
+            attackState:
+            if (shieldState == ShieldState.Attack) {
+                if (hitTimer-- > 0) break attackState;
+                if (livingEntity.isBlocking()) {
+                    mc.interactionManager.attackEntity(mc.player, livingEntity);
+                    if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+                    shieldState = ShieldState.SwapBack;
+                    swapBackTimer = calculateDelay(swapBackDelayMode.get(), swapBackDelayValue.get(), swapBackDelayMinRandomValue.get(), swapBackDelayMaxRandomValue.get());
+                } else {
+                    InvUtils.swap(originalSlot, false);
+                    resetShield();
+                }
+            }
+            swapBackState:
+            if (shieldState == ShieldState.SwapBack) {
+                if (swapBackTimer-- > 0) break swapBackState;
+                if (originalSlot != mc.player.getInventory().getSelectedSlot()) {
+                    InvUtils.swap(originalSlot, false);
+                }
+                resetShield();
+            }
+            if (shieldState == ShieldState.Attack || shieldState == ShieldState.SwapBack) return;
+        }
 
-            if (shouldMiss) {
-                performMissAttack(target);
-                lastAttackTime = now;
-                return;
+        // --- Проверка падения (OnFall) ---
+        OnFallMode currOnFallMode = onFallMode.get();
+        if (currOnFallMode != OnFallMode.None) {
+            float onFall = currOnFallMode == OnFallMode.Value ? onFallValue.get().floatValue() : randomOnFallFloat;
+            if (!(mc.player.fallDistance > onFall)) return;
+        }
+
+        // --- Проверка скорости удара (HitSpeed) ---
+        HitSpeedMode currHitSpeedMode = hitSpeedMode.get();
+        float hitSpeed = currHitSpeedMode == HitSpeedMode.Value ? hitSpeedValue.get().floatValue() : randomHitSpeedFloat;
+        if (currHitSpeedMode != HitSpeedMode.None && (mc.player.getAttackCooldownProgress(hitSpeed) * 17.0F) < 16) return;
+
+        // ==========================================
+        // НОВАЯ ЛОГИКА: РАНДОМНЫЙ МИСС НА КРИТАХ
+        // ==========================================
+        boolean isCrit = mc.player.fallDistance > 0.0F
+                && !mc.player.isOnGround()
+                && !mc.player.isClimbing()
+                && !mc.player.isTouchingWater()
+                && !mc.player.hasStatusEffect(StatusEffects.BLINDNESS)
+                && !mc.player.hasVehicle();
+
+        if (isCrit && missOnCrit.get()) {
+            currentCrits++;
+            if (currentCrits >= nextMissTarget) {
+                performMiss(livingEntity);
+                currentCrits = 0;
+                int min = missMinHits.get();
+                int max = missMaxHits.get();
+                if (max <= min) max = min + 1;
+                nextMissTarget = random.nextInt((max - min) + 1) + min;
+                return; // Выходим, чтобы не нанести реальный урон
             }
         }
 
-        // Обычный удар
-        attack(target);
-        lastAttackTime = now;
+        // ==========================================
+        // АТАКА + ИНТЕГРАЦИЯ С АВТОСПРИНТОМ
+        // ==========================================
+        ZAutoSprint autoSprint = Modules.get().get(ZAutoSprint.class);
+        if (autoSprint != null && autoSprint.isActive()) {
+            autoSprint.performWTap(livingEntity);
+        } else {
+            mc.interactionManager.attackEntity(mc.player, livingEntity);
+            if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
+        }
+
+        // Рандомизация после удара (без изменений)
+        if (currOnFallMode == OnFallMode.RandomValue) {
+            float min = Math.min(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
+            float max = Math.max(onFallMinRandomValue.get().floatValue(), onFallMaxRandomValue.get().floatValue());
+            randomOnFallFloat = min + mc.world.random.nextFloat() * (max - min);
+        }
+        if (currHitSpeedMode == HitSpeedMode.RandomValue) {
+            float min = Math.min(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
+            float max = Math.max(hitSpeedMinRandomValue.get().floatValue(), hitSpeedMaxRandomValue.get().floatValue());
+            randomHitSpeedFloat = min + mc.world.random.nextFloat() * (max - min);
+        }
     }
 
-    private void performMissAttack(LivingEntity target) {
-        // Запоминаем оригинальный поворот
+    private void performMiss(LivingEntity target) {
         float oldYaw = mc.player.getYaw();
         float oldPitch = mc.player.getPitch();
 
-        // Отворачиваем камеру в рандомную сторону
         float offsetYaw = (random.nextBoolean() ? missAngle.get().floatValue() : -missAngle.get().floatValue());
-        float offsetPitch = (random.nextBoolean() ? missAngle.get().floatValue() / 2 : -missAngle.get().floatValue() / 2);
-
         mc.player.setYaw(oldYaw + offsetYaw);
-        mc.player.setPitch(Math.max(-90, Math.min(90, oldPitch + offsetPitch)));
+        mc.player.setPitch(Math.max(-90, Math.min(90, oldPitch + (random.nextBoolean() ? 20 : -20))));
 
-        // Отправляем пакет удара (сервер видит промах)
         mc.interactionManager.attackEntity(mc.player, target);
-        mc.player.swingHand(Hand.MAIN_HAND);
+        if (swingHand.get()) mc.player.swingHand(Hand.MAIN_HAND);
 
-        // Возвращаем камеру обратно
         mc.player.setYaw(oldYaw);
         mc.player.setPitch(oldPitch);
     }
 
-    private void attack(LivingEntity target) {
-        // Если у тебя есть W-Tap, можно раскомментировать вызов ниже:
-        // ZAutoSprint autoSprint = Modules.get().get(ZAutoSprint.class);
-        // if (autoSprint != null && autoSprint.isActive()) {
-        //     autoSprint.performWTap(target);
-        // } else {
-            mc.interactionManager.attackEntity(mc.player, target);
-            mc.player.swingHand(Hand.MAIN_HAND);
-        // }
+    private void resetShield() {
+        shieldState = ShieldState.Idle;
+        swapTimer = hitTimer = swapBackTimer = 0;
+        originalSlot = -1;
     }
 
-    private LivingEntity getTarget() {
-        LivingEntity bestTarget = null;
-        double bestDist = Double.MAX_VALUE;
+    private int calculateDelay(DelayMode mode, int value, int minRandom, int maxRandom) {
+        return switch (mode) {
+            case Value -> value;
+            case RandomValue -> minRandom + mc.world.random.nextInt(maxRandom - minRandom + 1);
+        };
+    }
 
-        for (Entity e : mc.world.getEntities()) {
-            if (e == mc.player || e == mc.cameraEntity) continue;
-            if (!(e instanceof LivingEntity)) continue;
-            if (!e.isAlive()) continue;
-            if (!entities.get().contains(e.getType())) continue;
-            if (ignoreFriends.get() && e instanceof PlayerEntity player && !Friends.get().shouldAttack(player)) continue;
-            if (!PlayerUtils.isWithin(e, range.get())) continue;
-
-            double dist = mc.player.distanceTo(e);
-            if (dist < bestDist) {
-                bestDist = dist;
-                bestTarget = (LivingEntity) e;
+    private boolean entityCheck(Entity entity) {
+        if (entity.equals(mc.player) || entity.equals(mc.cameraEntity)) return false;
+        if ((entity instanceof LivingEntity livingEntity && livingEntity.isDead()) || !entity.isAlive()) return false;
+        if (!entities.get().contains(entity.getType())) return false;
+        if (ignoreNamed.get() && entity.hasCustomName()) return false;
+        if (ignoreTamed.get()) {
+            if (entity instanceof Tameable tameable && tameable.getOwner() != null && tameable.getOwner().equals(mc.player)) return false;
+        }
+        if (ignorePassive.get()) {
+            switch (entity) {
+                case EndermanEntity enderman when !enderman.isAngry() -> { return false; }
+                case ZombifiedPiglinEntity piglin when !piglin.isAttacking() -> { return false; }
+                case WolfEntity wolf when !wolf.isAttacking() -> { return false; }
+                default -> {}
             }
         }
-
-        return bestTarget;
+        if (entity instanceof PlayerEntity player) {
+            if (ignoreCreative.get() && player.isCreative()) return false;
+            if (ignoreFriends.get() && !Friends.get().shouldAttack(player)) return false;
+            if (shieldMode.get() == ShieldMode.Ignore && player.isBlocking()) return false;
+        }
+        if (entity instanceof AnimalEntity animal) {
+            return switch (mobAgeFilter.get()) {
+                case Baby -> animal.isBaby();
+                case Adult -> !animal.isBaby();
+                case Both -> true;
+            };
+        }
+        return true;
     }
+
+    public enum OnFallMode { None, Value, RandomValue }
+    public enum HitSpeedMode { None, Value, RandomValue }
+    public enum ShieldMode { Ignore, Break, None }
+    public enum DelayMode { Value, RandomValue }
+    private enum ShieldState { Idle, SwapAxe, Attack, SwapBack }
 }
