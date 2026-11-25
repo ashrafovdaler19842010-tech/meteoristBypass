@@ -8,6 +8,8 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.util.Hand;
 import zgoly.meteorist.Meteorist;
 
+import java.lang.reflect.Field;
+
 public class ZAutoSprint extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
@@ -27,6 +29,18 @@ public class ZAutoSprint extends Module {
     private boolean isWTapPending = false;
     private long wTapEndTime = 0;
     private LivingEntity pendingWTapTarget = null;
+
+    // Поле для доступа к jumpingCooldown через рефлексию
+    private static Field jumpingCooldownField;
+
+    static {
+        try {
+            jumpingCooldownField = LivingEntity.class.getDeclaredField("jumpingCooldown");
+            jumpingCooldownField.setAccessible(true);
+        } catch (NoSuchFieldException e) {
+            e.printStackTrace();
+        }
+    }
 
     public ZAutoSprint() {
         super(Meteorist.CATEGORY, "z-auto-sprint", "Автоспринт, NoJumpDelay и W-Tap.");
@@ -58,9 +72,13 @@ public class ZAutoSprint extends Module {
             return;
         }
 
-        // 2. NoJumpDelay
-        if (noJumpDelay.get()) {
-            mc.player.jumpingCooldown = 0; 
+        // 2. NoJumpDelay (через рефлексию)
+        if (noJumpDelay.get() && jumpingCooldownField != null) {
+            try {
+                jumpingCooldownField.setInt(mc.player, 0);
+            } catch (IllegalAccessException e) {
+                e.printStackTrace();
+            }
         }
 
         // 3. Автоспринт
@@ -69,7 +87,6 @@ public class ZAutoSprint extends Module {
         }
     }
 
-    // Вызывается из ZKillaura
     public void performWTap(LivingEntity target) {
         if (wTap.get() && mc.player.isSprinting()) {
             mc.options.sprintKey.setPressed(false);
