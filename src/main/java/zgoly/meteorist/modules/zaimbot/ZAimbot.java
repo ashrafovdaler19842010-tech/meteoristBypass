@@ -12,6 +12,7 @@ import meteordevelopment.meteorclient.gui.widgets.pressable.WMinus;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.systems.modules.combat.BowAimbot;
 import meteordevelopment.meteorclient.utils.entity.EntityAgeTest;
 import meteordevelopment.meteorclient.utils.entity.SortPriority;
@@ -44,6 +45,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
 import zgoly.meteorist.Meteorist;
+import zgoly.meteorist.modules.ZKillaura;
 import zgoly.meteorist.utils.config.MeteoristConfigManager;
 
 import java.util.ArrayList;
@@ -68,7 +70,7 @@ public class ZAimbot extends Module {
     private final SettingGroup sgAim = settings.createGroup("Aim");
     private final SettingGroup sgModes = settings.createGroup("Camera Modes");
 
-    // --- Фильтры (без изменений) ---
+    // --- Фильтры ---
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityTypes.PLAYER).build()
     );
@@ -121,7 +123,7 @@ public class ZAimbot extends Module {
             .name("item-whitelist").defaultValue(Items.BOW, Items.CROSSBOW, Items.TRIDENT).visible(() -> itemFilteringMode.get() == OperationMode.Whitelist).build()
     );
 
-    // --- Настройки наводки (без изменений) ---
+    // --- Настройки наводки ---
     public final Setting<Double> targetMovementPrediction = sgAim.add(new DoubleSetting.Builder()
             .name("target-movement-prediction").min(0).sliderMax(20).defaultValue(0).build()
     );
@@ -154,26 +156,32 @@ public class ZAimbot extends Module {
     private final Setting<CameraMode> cameraMode = sgModes.add(new EnumSetting.Builder<CameraMode>()
             .name("camera-mode").description("Special camera movement.").defaultValue(CameraMode.Normal).build()
     );
-    private final Setting<Double> backstabSpeed = sgModes.add(new DoubleSetting.Builder()
-            .name("backstab-speed").defaultValue(5.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Backstab).build()
+    private final Setting<Double> backstabReturnSpeed = sgModes.add(new DoubleSetting.Builder()
+            .name("backstab-return-speed").description("Speed to turn away after hit.").defaultValue(5.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Backstab).build()
+    );
+    private final Setting<Double> backstabAimSpeed = sgModes.add(new DoubleSetting.Builder()
+            .name("backstab-aim-speed").description("Speed to turn towards target for hit.").defaultValue(10.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Backstab).build()
+    );
+    private final Setting<Double> backstabHoldTime = sgModes.add(new DoubleSetting.Builder()
+            .name("backstab-hold-time").description("Time (ms) to hold camera on target.").defaultValue(100.0).min(0.0).sliderMax(500.0).visible(() -> cameraMode.get() == CameraMode.Backstab).build()
     );
     private final Setting<Double> spinSpeedX = sgModes.add(new DoubleSetting.Builder()
-            .name("spin-speed-x").defaultValue(15.0).min(1.0).sliderMax(50.0).visible(() -> cameraMode.get() == CameraMode.Spinbot).build()
+            .name("spin-speed-x").description("Horizontal spin speed.").defaultValue(15.0).min(1.0).sliderMax(50.0).visible(() -> cameraMode.get() == CameraMode.Spinbot).build()
     );
     private final Setting<Double> spinSpeedY = sgModes.add(new DoubleSetting.Builder()
-            .name("spin-speed-y").defaultValue(5.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Spinbot).build()
+            .name("spin-speed-y").description("Vertical spin speed.").defaultValue(5.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Spinbot).build()
     );
     private final Setting<Double> fakeLookAngle = sgModes.add(new DoubleSetting.Builder()
-            .name("fake-look-angle").defaultValue(180.0).min(45.0).sliderMax(360.0).visible(() -> cameraMode.get() == CameraMode.FakeLook).build()
+            .name("fake-look-angle").description("Max angle for fake look.").defaultValue(180.0).min(45.0).sliderMax(360.0).visible(() -> cameraMode.get() == CameraMode.FakeLook).build()
     );
     private final Setting<Double> fakeLookSpeed = sgModes.add(new DoubleSetting.Builder()
-            .name("fake-look-speed").defaultValue(2.0).min(0.5).sliderMax(10.0).visible(() -> cameraMode.get() == CameraMode.FakeLook).build()
+            .name("fake-look-speed").description("Speed of fake look.").defaultValue(2.0).min(0.5).sliderMax(10.0).visible(() -> cameraMode.get() == CameraMode.FakeLook).build()
     );
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
     private final Random random = new Random();
 
-    // Переменные для режимов
+    // Переменные состояния
     private float originalYaw = 0;
     private float originalPitch = 0;
     private float spinYaw = 0;
@@ -181,8 +189,12 @@ public class ZAimbot extends Module {
     private long lastMixSwitch = 0;
     private CameraMode currentMixMode = CameraMode.Normal;
 
+    private boolean isHitPhase = false;
+    private long hitPhaseEndTime = 0;
+    private Entity currentTarget = null;
+
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot that only aims, attack is handled by ZKillaura.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot that syncs with ZKillaura for attacks.");
     }
 
     @Override
@@ -194,6 +206,8 @@ public class ZAimbot extends Module {
             spinPitch = originalPitch;
             currentMixMode = CameraMode.Normal;
             lastMixSwitch = System.currentTimeMillis();
+            isHitPhase = false;
+            currentTarget = null;
         }
     }
 
@@ -201,12 +215,12 @@ public class ZAimbot extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
 
-        // Обновляем "истинный" угол, если не в специальном режиме
+        // Обновление "истинного" угла для коррекции ходьбы
         if (cameraMode.get() == CameraMode.Normal) {
             originalYaw = mc.player.getYRot();
             originalPitch = mc.player.getXRot();
         } else {
-            // Считываем движение мыши для коррекции
+            // Считываем движение мыши, чтобы игрок мог влиять на направление
             float mouseDeltaYaw = Mth.wrapDegrees(mc.player.getYRot() - spinYaw);
             float mouseDeltaPitch = mc.player.getXRot() - spinPitch;
             originalYaw = Mth.wrapDegrees(originalYaw + mouseDeltaYaw);
@@ -222,26 +236,151 @@ public class ZAimbot extends Module {
                 lastMixSwitch = now;
             }
         }
+
+        // Сброс фазы удара, если время вышло
+        if (isHitPhase && System.currentTimeMillis() > hitPhaseEndTime) {
+            isHitPhase = false;
+            currentTarget = null;
+        }
     }
 
-    // Коррекция ходьбы
+    // --- Коррекция ходьбы ---
     @EventHandler
     private void onPlayerMove(PlayerMoveEvent event) {
         if (cameraMode.get() == CameraMode.Normal) return;
         if (cameraMode.get() == CameraMode.MixAim && currentMixMode == CameraMode.Normal) return;
+        if (isHitPhase) return; // Во время удара не корректируем
 
         Vec3 movement = event.movement;
         if (movement.horizontalDistanceSqr() > 0) {
-            float deltaYaw = Mth.wrapDegrees(originalYaw - mc.player.getYRot());
+            // Вычисляем желаемый угол движения на основе WASD
+            float forward = mc.player.input.forwardImpulse;
+            float left = mc.player.input.leftImpulse;
+            if (forward == 0 && left == 0) return;
+
+            float desiredYaw = (float) (Math.toDegrees(Math.atan2(-left, forward))) + mc.player.getYRot();
+
+            // Разница между желаемым углом и текущим (куда смотрит камера)
+            float deltaYaw = Mth.wrapDegrees(desiredYaw - mc.player.getYRot());
             float rad = (float) Math.toRadians(deltaYaw);
             double cos = Math.cos(rad);
             double sin = Math.sin(rad);
 
+            // Поворачиваем вектор движения
             double newX = movement.x * cos - movement.z * sin;
             double newZ = movement.x * sin + movement.z * cos;
 
             event.movement = new Vec3(newX, movement.y, newZ);
         }
+    }
+
+    @Override
+    public CompoundTag toTag() {
+        CompoundTag tag = super.toTag();
+
+        ListTag list = new ListTag();
+        for (AimTrajectory trajectory : trajectories) {
+            CompoundTag tTag = new CompoundTag();
+            tTag.put("trajectory", trajectory.toTag());
+            list.add(tTag);
+        }
+
+        tag.put("trajectories", list);
+        return tag;
+    }
+
+    @Override
+    public Module fromTag(CompoundTag tag) {
+        super.fromTag(tag);
+
+        trajectories.clear();
+        ListTag list = tag.getListOrEmpty("trajectories");
+        for (Tag tagII : list) {
+            CompoundTag tagI = (CompoundTag) tagII;
+
+            AimTrajectory trajectory = new AimTrajectory();
+            CompoundTag trajectoryTag = (CompoundTag) tagI.get("trajectory");
+
+            if (trajectoryTag != null) trajectory.fromTag(trajectoryTag);
+
+            trajectories.add(trajectory);
+        }
+
+        return this;
+    }
+
+    @Override
+    public WWidget getWidget(GuiTheme theme) {
+        WVerticalList list = theme.verticalList();
+        fillWidget(theme, list);
+        return list;
+    }
+
+    private void fillWidget(GuiTheme theme, WVerticalList list) {
+        list.clear();
+
+        for (AimTrajectory trajectory : trajectories) {
+            list.add(theme.settings(trajectory.settings)).expandX();
+
+            WContainer controls = list.add(theme.horizontalList()).widget();
+
+            if (trajectories.size() > 1) {
+                WContainer moveContainer = controls.add(theme.horizontalList()).expandX().widget();
+                int index = trajectories.indexOf(trajectory);
+
+                if (index > 0) {
+                    WButton moveUp = moveContainer.add(theme.button(Meteorist.ARROW_UP)).expandX().widget();
+                    moveUp.tooltip = "Move trajectory up.";
+                    moveUp.action = () -> {
+                        trajectories.remove(index);
+                        trajectories.add(index - 1, trajectory);
+                        fillWidget(theme, list);
+                    };
+                }
+
+                if (index < trajectories.size() - 1) {
+                    WButton moveDown = moveContainer.add(theme.button(Meteorist.ARROW_DOWN)).expandX().widget();
+                    moveDown.tooltip = "Move trajectory down.";
+                    moveDown.action = () -> {
+                        trajectories.remove(index);
+                        trajectories.add(index + 1, trajectory);
+                        fillWidget(theme, list);
+                    };
+                }
+            }
+
+            WButton copy = controls.add(theme.button(COPY)).widget();
+            copy.tooltip = "Duplicate trajectory.";
+            copy.action = () -> {
+                trajectories.add(trajectories.indexOf(trajectory), trajectory.copy());
+                fillWidget(theme, list);
+            };
+
+            WMinus remove = controls.add(theme.minus()).widget();
+            remove.tooltip = "Remove trajectory.";
+            remove.action = () -> {
+                trajectories.remove(trajectory);
+                fillWidget(theme, list);
+            };
+        }
+
+        if (!trajectories.isEmpty()) list.add(theme.horizontalSeparator()).expandX();
+
+        WContainer controls = list.add(theme.horizontalList()).expandX().widget();
+
+        WButton add = controls.add(theme.button("Add Trajectory")).expandX().widget();
+        add.action = () -> {
+            trajectories.add(new AimTrajectory());
+            fillWidget(theme, list);
+        };
+
+        WButton removeAll = controls.add(theme.button("Remove All Trajectories")).expandX().widget();
+        removeAll.action = () -> {
+            trajectories.clear();
+            fillWidget(theme, list);
+        };
+
+        MeteoristConfigManager.configManager(theme, list, this);
     }
 
     @EventHandler
@@ -255,16 +394,57 @@ public class ZAimbot extends Module {
                 ? itemBlacklist.get().contains(heldItem)
                 : !itemWhitelist.get().contains(heldItem)) return;
 
+        // Проверяем, готов ли ZKillaura атаковать
+        ZKillaura killaura = Modules.get().get(ZKillaura.class);
+        boolean killauraReady = false;
+        if (killaura != null && killaura.isActive() && target != null) {
+            // Проверяем, находится ли цель в радиусе Killaura и прошёл ли кулдаун
+            // (Для простоты используем радиус и кулдаун атаки игрока)
+            if (PlayerUtils.isWithin(target, killaura.getRange()) && mc.player.getAttackStrengthScale(0) >= 1.0f) {
+                killauraReady = true;
+            }
+        }
+
         CameraMode modeToUse = cameraMode.get();
         if (modeToUse == CameraMode.MixAim) modeToUse = currentMixMode;
 
-        switch (modeToUse) {
-            case Backstab -> handleBackstab(target);
-            case Spinbot -> handleSpinbot(target);
-            case FakeLook -> handleFakeLook(target);
-            default -> {
-                if (target != null) aim(mc.player, target);
+        if (killauraReady) {
+            // Если Killaura готов бить, входим в фазу удара: наводимся на цель
+            if (!isHitPhase || currentTarget != target) {
+                isHitPhase = true;
+                currentTarget = target;
+                // Устанавливаем время удержания камеры в зависимости от режима
+                long holdTime = 50; // по умолчанию
+                if (modeToUse == CameraMode.Backstab) holdTime = (long) (backstabHoldTime.get() * 1.0);
+                hitPhaseEndTime = System.currentTimeMillis() + holdTime;
             }
+            aimAtTarget(mc.player, target, modeToUse);
+        } else {
+            // Иначе выполняем движения камеры в зависимости от режима
+            switch (modeToUse) {
+                case Backstab -> handleBackstab(target);
+                case Spinbot -> handleSpinbot(target);
+                case FakeLook -> handleFakeLook(target);
+                default -> {
+                    if (target != null) aim(mc.player, target);
+                }
+            }
+        }
+    }
+
+    private void aimAtTarget(LivingEntity player, Entity target, CameraMode mode) {
+        float yaw = (float) Rotations.getYaw(target.getEyePosition());
+        float pitch = (float) Rotations.getPitch(target, bodyTarget.get());
+
+        // Для Backstab используем настраиваемую скорость, для остальных - instant
+        if (mode == CameraMode.Backstab) {
+            spinYaw = approachAngle(spinYaw, yaw, backstabAimSpeed.get().floatValue());
+            spinPitch = approachAngle(spinPitch, pitch, backstabAimSpeed.get().floatValue());
+            player.setYRot(spinYaw);
+            player.setXRot(spinPitch);
+        } else {
+            player.setYRot(yaw);
+            player.setXRot(pitch);
         }
     }
 
@@ -273,8 +453,8 @@ public class ZAimbot extends Module {
         float yawToTarget = (float) Rotations.getYaw(target.getEyePosition());
         float oppositeYaw = yawToTarget + 180f;
 
-        spinYaw = approachAngle(spinYaw, oppositeYaw, backstabSpeed.get().floatValue());
-        spinPitch = approachAngle(spinPitch, 0, backstabSpeed.get().floatValue());
+        spinYaw = approachAngle(spinYaw, oppositeYaw, backstabReturnSpeed.get().floatValue());
+        spinPitch = approachAngle(spinPitch, 0, backstabReturnSpeed.get().floatValue());
 
         mc.player.setYRot(spinYaw);
         mc.player.setXRot(spinPitch);
@@ -283,7 +463,7 @@ public class ZAimbot extends Module {
     private void handleSpinbot(Entity target) {
         spinYaw += spinSpeedX.get().floatValue();
         if (spinYaw > 360) spinYaw -= 360;
-        
+
         spinPitch += spinSpeedY.get().floatValue();
         if (spinPitch > 90) spinPitch = -90;
         if (spinPitch < -90) spinPitch = 90;
@@ -293,10 +473,10 @@ public class ZAimbot extends Module {
     }
 
     private void handleFakeLook(Entity target) {
-        float offset = (float) Math.sin(System.currentTimeMillis() / 1000.0) * fakeLookAngle.get().floatValue();
+        float offset = (float) Math.sin(System.currentTimeMillis() / 1000.0 * fakeLookSpeed.get()) * fakeLookAngle.get().floatValue();
         spinYaw = Mth.wrapDegrees(originalYaw + offset);
         spinPitch = 0;
-        
+
         mc.player.setYRot(spinYaw);
         mc.player.setXRot(spinPitch);
     }
