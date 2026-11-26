@@ -12,6 +12,7 @@ import meteordevelopment.meteorclient.gui.widgets.pressable.WMinus;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.entity.EntityAgeTest;
 import meteordevelopment.meteorclient.utils.entity.SortPriority;
 import meteordevelopment.meteorclient.utils.entity.Target;
@@ -43,6 +44,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
 import zgoly.meteorist.Meteorist;
+import zgoly.meteorist.modules.ZAutoSprint;
 import zgoly.meteorist.utils.config.MeteoristConfigManager;
 
 import java.util.ArrayList;
@@ -133,14 +135,17 @@ public class ZAimbot extends Module {
     private final Setting<Double> attackRangeSync = sgModes.add(new DoubleSetting.Builder()
             .name("attack-range").description("Distance to target to start hitting.").defaultValue(3.0).min(2.0).sliderMax(6.0).build()
     );
-    private final Setting<Boolean> stopMovementInRange = sgModes.add(new BoolSetting.Builder()
-            .name("stop-movement-in-range").description("Stop moving horizontally when on ground in attack range.").defaultValue(false).build()
+    private final Setting<Double> pounceRange = sgModes.add(new DoubleSetting.Builder()
+            .name("pounce-range").description("Max distance to look at target for jumping.").defaultValue(6.0).min(3.0).sliderMax(8.0).build()
+    );
+    private final Setting<Double> snapSpeed = sgModes.add(new DoubleSetting.Builder()
+            .name("snap-speed").description("Speed of snapping to target (20 = instant).").defaultValue(20.0).min(1.0).sliderMax(20.0).build()
+    );
+    private final Setting<Double> holdTime = sgModes.add(new DoubleSetting.Builder()
+            .name("hold-time").description("Time (ms) to hold camera on target before snapping back.").defaultValue(50.0).min(10.0).sliderMax(500.0).build()
     );
     private final Setting<Double> backstabReturnSpeed = sgModes.add(new DoubleSetting.Builder()
-            .name("backstab-return-speed").description("Speed to turn away.").defaultValue(10.0).min(1.0).sliderMax(20.0).build()
-    );
-    private final Setting<Double> backstabAimSpeed = sgModes.add(new DoubleSetting.Builder()
-            .name("backstab-aim-speed").description("Speed to turn towards target when approaching.").defaultValue(15.0).min(1.0).sliderMax(20.0).build()
+            .name("backstab-return-speed").description("Speed to turn away.").defaultValue(15.0).min(1.0).sliderMax(20.0).build()
     );
     private final Setting<Double> spinSpeedX = sgModes.add(new DoubleSetting.Builder()
             .name("spin-speed-x").description("Horizontal spin speed.").defaultValue(15.0).min(1.0).sliderMax(50.0).visible(() -> cameraMode.get() == CameraMode.Spinbot).build()
@@ -155,9 +160,7 @@ public class ZAimbot extends Module {
             .name("fake-look-speed").description("Speed of fake look.").defaultValue(2.0).min(0.5).sliderMax(10.0).visible(() -> cameraMode.get() == CameraMode.FakeLook).build()
     );
 
-    // --- ВОЗВРАЩЕННЫЙ СПИСОК ТРАЕКТОРИЙ ---
     private final List<AimTrajectory> trajectories = new ArrayList<>();
-    
     private final Random random = new Random();
 
     private float originalYaw = 0;
@@ -168,6 +171,10 @@ public class ZAimbot extends Module {
     private CameraMode currentMixMode = CameraMode.Normal;
     
     private LivingEntity lockedTarget = null;
+
+    // Переменные для прыжков и удержания
+    private long holdEndTime = 0;
+    private long lastPounceTime = 0;
 
     public ZAimbot() {
         super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot that syncs with ZKillaura for attacks.");
@@ -183,8 +190,9 @@ public class ZAimbot extends Module {
             currentMixMode = CameraMode.Normal;
             lastMixSwitch = System.currentTimeMillis();
             lockedTarget = null;
+            holdEndTime = 0;
+            lastPounceTime = 0;
             
-            // Если включен TargetLock, ищем цель сразу при включении
             if (targetLock.get()) {
                 Entity target = TargetUtils.get(this::entityCheck, priority.get());
                 if (target instanceof LivingEntity) {
@@ -198,7 +206,6 @@ public class ZAimbot extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
 
-        // Сбрасываем лок, если цель умерла
         if (lockedTarget != null && !lockedTarget.isAlive()) {
             lockedTarget = null;
         }
@@ -229,34 +236,27 @@ public class ZAimbot extends Module {
         }
     }
 
-    // --- Коррекция ходьбы ---
+    // --- Коррекция ходьбы (Инверсия W/S при взгляде назад) ---
     @EventHandler
     private void onPlayerMove(PlayerMoveEvent event) {
         if (cameraMode.get() == CameraMode.Normal) return;
         if (cameraMode.get() == CameraMode.MixAim && currentMixMode == CameraMode.Normal) return;
 
         Entity target = getCurrentTarget();
-        
-        if (stopMovementInRange.get() && target != null && PlayerUtils.isWithin(target, attackRangeSync.get()) && mc.player.onGround()) {
-            event.movement = new Vec3(0, event.movement.y, 0);
-            return;
-        }
+        if (target == null) return;
 
-        Vec3 movement = event.movement;
-        if (movement.horizontalDistanceSqr() > 0) {
-            float deltaYaw = Mth.wrapDegrees(originalYaw - mc.player.getYRot());
-            float rad = (float) Math.toRadians(deltaYaw);
-            double cos = Math.cos(rad);
-            double sin = Math.sin(rad);
-
-            double newX = movement.x * cos - movement.z * sin;
-            double newZ = movement.x * sin + movement.z * cos;
-
-            event.movement = new Vec3(newX, movement.y, newZ);
+        // Если мы смотрим спиной к цели, инвертируем вектор движения
+        if (cameraMode.get() == CameraMode.BackstabAlways || cameraMode.get() == CameraMode.Backstab) {
+            float yawToTarget = (float) Rotations.getYaw(target.getEyePosition());
+            float delta = Math.abs(Mth.wrapDegrees(mc.player.getYRot() - yawToTarget));
+            
+            // Если угол между взглядом и целью больше 90 градусов (смотрим назад)
+            if (delta > 90.0f) {
+                event.movement = new Vec3(-event.movement.x, event.movement.y, -event.movement.z);
+            }
         }
     }
 
-    // --- Вспомогательный метод для получения цели (с учетом лока) ---
     private Entity getCurrentTarget() {
         if (targetLock.get() && lockedTarget != null && lockedTarget.isAlive()) {
             return lockedTarget;
@@ -389,33 +389,48 @@ public class ZAimbot extends Module {
 
         if (modeToUse == CameraMode.BackstabAlways) {
             double dist = mc.player.distanceTo(target);
+            long now = System.currentTimeMillis();
 
             if (dist <= attackRangeSync.get()) {
-                // В зоне атаки
+                // В зоне 3 блоков (Атака)
                 if (mc.player.fallDistance > 0.0F) {
-                    // ПАДАЕМ -> Поворот на крит
-                    float targetYaw = (float) Rotations.getYaw(target.getEyePosition());
-                    float targetPitch = (float) Rotations.getPitch(target, bodyTarget.get());
-                    mc.player.setYRot(targetYaw);
-                    mc.player.setXRot(targetPitch);
+                    // ПАДАЕМ -> Поворот на крит (моментальный снап)
+                    faceTarget(target);
+                    holdEndTime = now + holdTime.get().longValue();
                 } else {
-                    // СТОИМ -> Отворот 180
-                    float yawToTarget = (float) Rotations.getYaw(target.getEyePosition());
-                    float oppositeYaw = yawToTarget + 180f;
+                    // СТОИМ -> Смотрим спиной
+                    if (now < holdEndTime) {
+                        faceTarget(target); // Удерживаем взгляд на цели
+                    } else {
+                        faceAway(target);
+                    }
+                }
+            } else if (dist <= pounceRange.get()) {
+                // Зона от 3 до 6 блоков (Прыжок для инерции)
+                if (now < holdEndTime) {
+                    faceTarget(target); // Удерживаем
+                } else if (mc.player.onGround() && now > lastPounceTime + 300) {
+                    // СНАП + ПРЫЖОК + СБРОС СПРИНТА
+                    faceTarget(target);
+                    mc.options.keyJump.setDown(true);
+                    mc.player.setSprinting(false); // Сброс спринта для инерции
                     
-                    spinYaw = approachAngle(spinYaw, oppositeYaw, backstabReturnSpeed.get().floatValue());
-                    spinPitch = approachAngle(spinPitch, 0, backstabReturnSpeed.get().floatValue());
+                    ZAutoSprint autoSprint = Modules.get().get(ZAutoSprint.class);
+                    if (autoSprint != null && autoSprint.isActive()) {
+                         // Если у нас есть ZAutoSprint, можно дернуть его сброс, 
+                         // но setSprinting(false) обычно достаточно.
+                    }
                     
-                    mc.player.setYRot(spinYaw);
-                    mc.player.setXRot(spinPitch);
+                    holdEndTime = now + holdTime.get().longValue();
+                    lastPounceTime = now;
+                } else {
+                    mc.options.keyJump.setDown(false);
+                    faceAway(target);
                 }
             } else {
-                // ВНЕ ЗОНЫ -> Смотрим на игрока для прыжка
-                float targetYaw = (float) Rotations.getYaw(target.getEyePosition());
-                spinYaw = approachAngle(spinYaw, targetYaw, backstabAimSpeed.get().floatValue());
-                
-                mc.player.setYRot(spinYaw);
-                mc.player.setXRot(0);
+                // Вне зоны 6 блоков -> Смотрим спиной
+                mc.options.keyJump.setDown(false);
+                faceAway(target);
             }
         } else {
             switch (modeToUse) {
@@ -427,13 +442,33 @@ public class ZAimbot extends Module {
         }
     }
 
+    private void faceTarget(Entity target) {
+        float targetYaw = (float) Rotations.getYaw(target.getEyePosition());
+        float targetPitch = (float) Rotations.getPitch(target, bodyTarget.get());
+        
+        spinYaw = approachAngle(spinYaw, targetYaw, snapSpeed.get().floatValue());
+        spinPitch = approachAngle(spinPitch, targetPitch, snapSpeed.get().floatValue());
+        
+        mc.player.setYRot(spinYaw);
+        mc.player.setXRot(spinPitch);
+    }
+
+    private void faceAway(Entity target) {
+        float yawToTarget = (float) Rotations.getYaw(target.getEyePosition());
+        float oppositeYaw = yawToTarget + 180f;
+        
+        spinYaw = approachAngle(spinYaw, oppositeYaw, backstabReturnSpeed.get().floatValue());
+        spinPitch = approachAngle(spinPitch, 0, backstabReturnSpeed.get().floatValue());
+        
+        mc.player.setYRot(spinYaw);
+        mc.player.setXRot(spinPitch);
+    }
+
     private void handleBackstab(Entity target) {
         float yawToTarget = (float) Rotations.getYaw(target.getEyePosition());
         float oppositeYaw = yawToTarget + 180f;
-
         spinYaw = approachAngle(spinYaw, oppositeYaw, backstabReturnSpeed.get().floatValue());
         spinPitch = approachAngle(spinPitch, 0, backstabReturnSpeed.get().floatValue());
-
         mc.player.setYRot(spinYaw);
         mc.player.setXRot(spinPitch);
     }
@@ -453,7 +488,6 @@ public class ZAimbot extends Module {
         float offset = (float) Math.sin(System.currentTimeMillis() / 1000.0 * fakeLookSpeed.get()) * fakeLookAngle.get().floatValue();
         spinYaw = Mth.wrapDegrees(originalYaw + offset);
         spinPitch = 0;
-
         mc.player.setYRot(spinYaw);
         mc.player.setXRot(spinPitch);
     }
