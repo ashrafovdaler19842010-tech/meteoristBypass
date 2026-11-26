@@ -255,10 +255,11 @@ public class ZAimbot extends Module {
             float forward = 0;
             float left = 0;
             
-            if (mc.options.keyUp.isPressed()) forward += 1;
-            if (mc.options.keyDown.isPressed()) forward -= 1;
-            if (mc.options.keyLeft.isPressed()) left += 1;
-            if (mc.options.keyRight.isPressed()) left -= 1;
+            // ИСПРАВЛЕНО: isPressed() заменен на isDown()
+            if (mc.options.keyUp.isDown()) forward += 1;
+            if (mc.options.keyDown.isDown()) forward -= 1;
+            if (mc.options.keyLeft.isDown()) left += 1;
+            if (mc.options.keyRight.isDown()) left -= 1;
 
             if (forward == 0 && left == 0) return;
 
