@@ -72,9 +72,11 @@ public class ZAimbot extends Module {
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityTypes.PLAYER).build()
     );
-    // Расширил дальность обнаружения до 8 блоков
     private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
             .name("range").description("Detection range.").defaultValue(6.0).min(1.0).sliderMax(8.0).build()
+    );
+    private final Setting<Boolean> targetLock = sgFilter.add(new BoolSetting.Builder()
+            .name("target-lock").description("Locks onto the first target until module is toggled.").defaultValue(true).build()
     );
     private final Setting<EntityAgeTest> passiveMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
             .name("passive-mob-age-filter").description("Age of passive mobs.").defaultValue(EntityAgeTest.Adult).build()
@@ -153,6 +155,9 @@ public class ZAimbot extends Module {
             .name("fake-look-speed").description("Speed of fake look.").defaultValue(2.0).min(0.5).sliderMax(10.0).visible(() -> cameraMode.get() == CameraMode.FakeLook).build()
     );
 
+    // --- ВОЗВРАЩЕННЫЙ СПИСОК ТРАЕКТОРИЙ ---
+    private final List<AimTrajectory> trajectories = new ArrayList<>();
+    
     private final Random random = new Random();
 
     private float originalYaw = 0;
@@ -161,6 +166,8 @@ public class ZAimbot extends Module {
     private float spinPitch = 0;
     private long lastMixSwitch = 0;
     private CameraMode currentMixMode = CameraMode.Normal;
+    
+    private LivingEntity lockedTarget = null;
 
     public ZAimbot() {
         super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot that syncs with ZKillaura for attacks.");
@@ -175,6 +182,15 @@ public class ZAimbot extends Module {
             spinPitch = originalPitch;
             currentMixMode = CameraMode.Normal;
             lastMixSwitch = System.currentTimeMillis();
+            lockedTarget = null;
+            
+            // Если включен TargetLock, ищем цель сразу при включении
+            if (targetLock.get()) {
+                Entity target = TargetUtils.get(this::entityCheck, priority.get());
+                if (target instanceof LivingEntity) {
+                    lockedTarget = (LivingEntity) target;
+                }
+            }
         }
     }
 
@@ -182,13 +198,17 @@ public class ZAimbot extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
 
+        // Сбрасываем лок, если цель умерла
+        if (lockedTarget != null && !lockedTarget.isAlive()) {
+            lockedTarget = null;
+        }
+
         if (cameraMode.get() == CameraMode.Normal) {
             originalYaw = mc.player.getYRot();
             originalPitch = mc.player.getXRot();
             spinYaw = originalYaw;
             spinPitch = originalPitch;
         } else {
-            // Считываем движение мыши, чтобы игрок мог менять направление
             float mouseDeltaYaw = Mth.wrapDegrees(mc.player.getYRot() - spinYaw);
             float mouseDeltaPitch = mc.player.getXRot() - spinPitch;
             
@@ -209,13 +229,13 @@ public class ZAimbot extends Module {
         }
     }
 
-    // --- Коррекция ходьбы (Инверсия W/S чтобы не залипало) ---
+    // --- Коррекция ходьбы ---
     @EventHandler
     private void onPlayerMove(PlayerMoveEvent event) {
         if (cameraMode.get() == CameraMode.Normal) return;
         if (cameraMode.get() == CameraMode.MixAim && currentMixMode == CameraMode.Normal) return;
 
-        Entity target = TargetUtils.get(this::entityCheck, priority.get());
+        Entity target = getCurrentTarget();
         
         if (stopMovementInRange.get() && target != null && PlayerUtils.isWithin(target, attackRangeSync.get()) && mc.player.onGround()) {
             event.movement = new Vec3(0, event.movement.y, 0);
@@ -224,8 +244,6 @@ public class ZAimbot extends Module {
 
         Vec3 movement = event.movement;
         if (movement.horizontalDistanceSqr() > 0) {
-            // Поворачиваем вектор движения так, чтобы он совпадал с "истинным" взглядом мыши
-            // Это предотвращает залипание W/S, когда камера смотрит назад.
             float deltaYaw = Mth.wrapDegrees(originalYaw - mc.player.getYRot());
             float rad = (float) Math.toRadians(deltaYaw);
             double cos = Math.cos(rad);
@@ -236,6 +254,19 @@ public class ZAimbot extends Module {
 
             event.movement = new Vec3(newX, movement.y, newZ);
         }
+    }
+
+    // --- Вспомогательный метод для получения цели (с учетом лока) ---
+    private Entity getCurrentTarget() {
+        if (targetLock.get() && lockedTarget != null && lockedTarget.isAlive()) {
+            return lockedTarget;
+        }
+        
+        Entity target = TargetUtils.get(this::entityCheck, priority.get());
+        if (targetLock.get() && target instanceof LivingEntity) {
+            lockedTarget = (LivingEntity) target;
+        }
+        return target;
     }
 
     @Override
@@ -343,7 +374,7 @@ public class ZAimbot extends Module {
     private void onRender3D(Render3DEvent event) {
         if (mc.player == null || mc.level == null) return;
 
-        Entity target = TargetUtils.get(this::entityCheck, priority.get());
+        Entity target = getCurrentTarget();
 
         if (target == null) {
             if (cameraMode.get() == CameraMode.BackstabAlways) {
@@ -360,15 +391,15 @@ public class ZAimbot extends Module {
             double dist = mc.player.distanceTo(target);
 
             if (dist <= attackRangeSync.get()) {
-                // В зоне 3 блоков
+                // В зоне атаки
                 if (mc.player.fallDistance > 0.0F) {
-                    // МЫ ПАДАЕМ (в воздухе) -> Мгновенный поворот на игрока для крита
+                    // ПАДАЕМ -> Поворот на крит
                     float targetYaw = (float) Rotations.getYaw(target.getEyePosition());
                     float targetPitch = (float) Rotations.getPitch(target, bodyTarget.get());
                     mc.player.setYRot(targetYaw);
                     mc.player.setXRot(targetPitch);
                 } else {
-                    // СТОИМ НА ЗЕМЛЕ -> Смотрим ровно назад (180)
+                    // СТОИМ -> Отворот 180
                     float yawToTarget = (float) Rotations.getYaw(target.getEyePosition());
                     float oppositeYaw = yawToTarget + 180f;
                     
@@ -379,7 +410,7 @@ public class ZAimbot extends Module {
                     mc.player.setXRot(spinPitch);
                 }
             } else {
-                // ВНЕ ЗОНЫ 3 БЛОКОВ -> Смотрим НА игрока, чтобы прыгнуть к нему
+                // ВНЕ ЗОНЫ -> Смотрим на игрока для прыжка
                 float targetYaw = (float) Rotations.getYaw(target.getEyePosition());
                 spinYaw = approachAngle(spinYaw, targetYaw, backstabAimSpeed.get().floatValue());
                 
@@ -387,7 +418,6 @@ public class ZAimbot extends Module {
                 mc.player.setXRot(0);
             }
         } else {
-            // Остальные режимы (Spinbot, FakeLook и т.д.)
             switch (modeToUse) {
                 case Backstab -> handleBackstab(target);
                 case Spinbot -> handleSpinbot(target);
