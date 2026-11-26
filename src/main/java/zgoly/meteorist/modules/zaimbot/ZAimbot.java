@@ -13,7 +13,6 @@ import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
-import meteordevelopment.meteorclient.systems.modules.combat.BowAimbot;
 import meteordevelopment.meteorclient.utils.entity.EntityAgeTest;
 import meteordevelopment.meteorclient.utils.entity.SortPriority;
 import meteordevelopment.meteorclient.utils.entity.Target;
@@ -253,12 +252,18 @@ public class ZAimbot extends Module {
 
         Vec3 movement = event.movement;
         if (movement.horizontalDistanceSqr() > 0) {
-            // Вычисляем желаемый угол движения на основе WASD
-            float forward = mc.player.input.forwardImpulse;
-            float left = mc.player.input.leftImpulse;
+            float forward = 0;
+            float left = 0;
+            
+            if (mc.options.keyUp.isPressed()) forward += 1;
+            if (mc.options.keyDown.isPressed()) forward -= 1;
+            if (mc.options.keyLeft.isPressed()) left += 1;
+            if (mc.options.keyRight.isPressed()) left -= 1;
+
             if (forward == 0 && left == 0) return;
 
-            float desiredYaw = (float) (Math.toDegrees(Math.atan2(-left, forward))) + mc.player.getYRot();
+            // Вычисляем желаемый угол движения на основе нажатий WASD
+            float desiredYaw = (float) Math.toDegrees(Math.atan2(-left, forward)) + mc.player.getYRot();
 
             // Разница между желаемым углом и текущим (куда смотрит камера)
             float deltaYaw = Mth.wrapDegrees(desiredYaw - mc.player.getYRot());
@@ -277,14 +282,12 @@ public class ZAimbot extends Module {
     @Override
     public CompoundTag toTag() {
         CompoundTag tag = super.toTag();
-
         ListTag list = new ListTag();
         for (AimTrajectory trajectory : trajectories) {
             CompoundTag tTag = new CompoundTag();
             tTag.put("trajectory", trajectory.toTag());
             list.add(tTag);
         }
-
         tag.put("trajectories", list);
         return tag;
     }
@@ -292,20 +295,15 @@ public class ZAimbot extends Module {
     @Override
     public Module fromTag(CompoundTag tag) {
         super.fromTag(tag);
-
         trajectories.clear();
         ListTag list = tag.getListOrEmpty("trajectories");
         for (Tag tagII : list) {
             CompoundTag tagI = (CompoundTag) tagII;
-
             AimTrajectory trajectory = new AimTrajectory();
             CompoundTag trajectoryTag = (CompoundTag) tagI.get("trajectory");
-
             if (trajectoryTag != null) trajectory.fromTag(trajectoryTag);
-
             trajectories.add(trajectory);
         }
-
         return this;
     }
 
@@ -321,7 +319,6 @@ public class ZAimbot extends Module {
 
         for (AimTrajectory trajectory : trajectories) {
             list.add(theme.settings(trajectory.settings)).expandX();
-
             WContainer controls = list.add(theme.horizontalList()).widget();
 
             if (trajectories.size() > 1) {
@@ -398,9 +395,8 @@ public class ZAimbot extends Module {
         ZKillaura killaura = Modules.get().get(ZKillaura.class);
         boolean killauraReady = false;
         if (killaura != null && killaura.isActive() && target != null) {
-            // Проверяем, находится ли цель в радиусе Killaura и прошёл ли кулдаун
-            // (Для простоты используем радиус и кулдаун атаки игрока)
-            if (PlayerUtils.isWithin(target, killaura.getRange()) && mc.player.getAttackStrengthScale(0) >= 1.0f) {
+            // Используем range из самого аимбота, чтобы не менять ZKillaura
+            if (PlayerUtils.isWithin(target, range.get()) && mc.player.getAttackStrengthScale(0) >= 1.0f) {
                 killauraReady = true;
             }
         }
@@ -409,18 +405,15 @@ public class ZAimbot extends Module {
         if (modeToUse == CameraMode.MixAim) modeToUse = currentMixMode;
 
         if (killauraReady) {
-            // Если Killaura готов бить, входим в фазу удара: наводимся на цель
             if (!isHitPhase || currentTarget != target) {
                 isHitPhase = true;
                 currentTarget = target;
-                // Устанавливаем время удержания камеры в зависимости от режима
-                long holdTime = 50; // по умолчанию
+                long holdTime = 50; 
                 if (modeToUse == CameraMode.Backstab) holdTime = (long) (backstabHoldTime.get() * 1.0);
                 hitPhaseEndTime = System.currentTimeMillis() + holdTime;
             }
             aimAtTarget(mc.player, target, modeToUse);
         } else {
-            // Иначе выполняем движения камеры в зависимости от режима
             switch (modeToUse) {
                 case Backstab -> handleBackstab(target);
                 case Spinbot -> handleSpinbot(target);
@@ -436,7 +429,6 @@ public class ZAimbot extends Module {
         float yaw = (float) Rotations.getYaw(target.getEyePosition());
         float pitch = (float) Rotations.getPitch(target, bodyTarget.get());
 
-        // Для Backstab используем настраиваемую скорость, для остальных - instant
         if (mode == CameraMode.Backstab) {
             spinYaw = approachAngle(spinYaw, yaw, backstabAimSpeed.get().floatValue());
             spinPitch = approachAngle(spinPitch, pitch, backstabAimSpeed.get().floatValue());
