@@ -12,7 +12,6 @@ import meteordevelopment.meteorclient.gui.widgets.pressable.WMinus;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.utils.entity.EntityAgeTest;
 import meteordevelopment.meteorclient.utils.entity.SortPriority;
 import meteordevelopment.meteorclient.utils.entity.Target;
@@ -44,7 +43,6 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
 import zgoly.meteorist.Meteorist;
-import zgoly.meteorist.modules.ZKillaura;
 import zgoly.meteorist.utils.config.MeteoristConfigManager;
 
 import java.util.ArrayList;
@@ -60,7 +58,7 @@ public class ZAimbot extends Module {
     public enum CameraMode {
         Normal,
         Backstab,
-        BackstabAlways, // Новый режим: всегда спиной, поворот только в момент удара
+        BackstabAlways,
         Spinbot,
         FakeLook,
         MixAim
@@ -70,7 +68,7 @@ public class ZAimbot extends Module {
     private final SettingGroup sgAim = settings.createGroup("Aim");
     private final SettingGroup sgModes = settings.createGroup("Camera Modes");
 
-    // --- Фильтры (без изменений) ---
+    // --- Фильтры ---
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityTypes.PLAYER).build()
     );
@@ -154,22 +152,22 @@ public class ZAimbot extends Module {
 
     // --- Настройки режимов камеры ---
     private final Setting<CameraMode> cameraMode = sgModes.add(new EnumSetting.Builder<CameraMode>()
-            .name("camera-mode").description("Special camera movement.").defaultValue(CameraMode.Normal).build()
+            .name("camera-mode").description("Special camera movement.").defaultValue(CameraMode.BackstabAlways).build()
     );
     private final Setting<Double> attackRangeSync = sgModes.add(new DoubleSetting.Builder()
             .name("attack-range-sync").description("Distance to target before aiming for hit.").defaultValue(3.0).min(2.0).sliderMax(6.0).build()
     );
     private final Setting<Boolean> stopMovementInRange = sgModes.add(new BoolSetting.Builder()
-            .name("stop-movement-in-range").description("Stop moving when target is in attack range.").defaultValue(true).build()
+            .name("stop-movement-in-range").description("Stop moving horizontally when in attack range and on ground.").defaultValue(true).build()
     );
     private final Setting<Double> backstabReturnSpeed = sgModes.add(new DoubleSetting.Builder()
-            .name("backstab-return-speed").description("Speed to turn away after hit.").defaultValue(5.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Backstab || cameraMode.get() == CameraMode.BackstabAlways).build()
+            .name("backstab-return-speed").description("Speed to turn away after hit.").defaultValue(20.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Backstab || cameraMode.get() == CameraMode.BackstabAlways).build()
     );
     private final Setting<Double> backstabAimSpeed = sgModes.add(new DoubleSetting.Builder()
-            .name("backstab-aim-speed").description("Speed to turn towards target for hit.").defaultValue(10.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Backstab || cameraMode.get() == CameraMode.BackstabAlways).build()
+            .name("backstab-aim-speed").description("Speed to turn towards target for hit.").defaultValue(20.0).min(1.0).sliderMax(20.0).visible(() -> cameraMode.get() == CameraMode.Backstab || cameraMode.get() == CameraMode.BackstabAlways).build()
     );
     private final Setting<Double> backstabHoldTime = sgModes.add(new DoubleSetting.Builder()
-            .name("backstab-hold-time").description("Time (ms) to hold camera on target.").defaultValue(100.0).min(0.0).sliderMax(500.0).visible(() -> cameraMode.get() == CameraMode.Backstab || cameraMode.get() == CameraMode.BackstabAlways).build()
+            .name("backstab-hold-time").description("Time (ms) to hold camera on target.").defaultValue(50.0).min(0.0).sliderMax(500.0).visible(() -> cameraMode.get() == CameraMode.Backstab || cameraMode.get() == CameraMode.BackstabAlways).build()
     );
     private final Setting<Double> spinSpeedX = sgModes.add(new DoubleSetting.Builder()
             .name("spin-speed-x").description("Horizontal spin speed.").defaultValue(15.0).min(1.0).sliderMax(50.0).visible(() -> cameraMode.get() == CameraMode.Spinbot).build()
@@ -238,28 +236,22 @@ public class ZAimbot extends Module {
                 lastMixSwitch = now;
             }
         }
-
-        if (isHitPhase && System.currentTimeMillis() > hitPhaseEndTime) {
-            isHitPhase = false;
-            currentTarget = null;
-        }
     }
 
+    // --- Коррекция ходьбы (Инверсия для Backstab) ---
     @EventHandler
     private void onPlayerMove(PlayerMoveEvent event) {
         if (cameraMode.get() == CameraMode.Normal) return;
         if (cameraMode.get() == CameraMode.MixAim && currentMixMode == CameraMode.Normal) return;
 
         Entity target = TargetUtils.get(this::entityCheck, priority.get());
-        if (target == null) return;
-
-        // Если цель в радиусе удара и включена остановка — не двигаемся горизонтально
-        if (stopMovementInRange.get() && PlayerUtils.isWithin(target, attackRangeSync.get())) {
+        
+        // Остановка в радиусе удара (только когда на земле)
+        if (stopMovementInRange.get() && target != null && PlayerUtils.isWithin(target, attackRangeSync.get()) && mc.player.onGround()) {
             event.movement = new Vec3(0, event.movement.y, 0);
             return;
         }
 
-        // Иначе корректируем движение, чтобы не улетать в сторону взгляда
         Vec3 movement = event.movement;
         if (movement.horizontalDistanceSqr() > 0) {
             float forward = 0;
@@ -271,7 +263,16 @@ public class ZAimbot extends Module {
 
             if (forward == 0 && left == 0) return;
 
-            float desiredYaw = (float) Math.toDegrees(Math.atan2(-left, forward)) + mc.player.getYRot();
+            float yawOffset = 0;
+            CameraMode mode = cameraMode.get();
+            if (mode == CameraMode.MixAim) mode = currentMixMode;
+
+            // Если мы смотрим спиной, инвертируем движение (W ведет к игроку)
+            if (mode == CameraMode.Backstab || mode == CameraMode.BackstabAlways) {
+                yawOffset = 180.0f;
+            }
+
+            float desiredYaw = (float) Math.toDegrees(Math.atan2(-left, forward)) + mc.player.getYRot() + yawOffset;
             float deltaYaw = Mth.wrapDegrees(desiredYaw - mc.player.getYRot());
             float rad = (float) Math.toRadians(deltaYaw);
             double cos = Math.cos(rad);
@@ -396,59 +397,57 @@ public class ZAimbot extends Module {
                 ? itemBlacklist.get().contains(heldItem)
                 : !itemWhitelist.get().contains(heldItem)) return;
 
-        ZKillaura killaura = Modules.get().get(ZKillaura.class);
-        boolean killauraReady = false;
-        if (killaura != null && killaura.isActive() && target != null) {
-            // Используем attackRangeSync для синхронизации с реальной дистанцией удара
-            if (PlayerUtils.isWithin(target, attackRangeSync.get()) && mc.player.getAttackStrengthScale(0) >= 1.0f) {
-                killauraReady = true;
+        // Если цели нет - просто смотрим прямо
+        if (target == null) {
+            isHitPhase = false;
+            currentTarget = null;
+            mc.player.setYRot(originalYaw);
+            mc.player.setXRot(originalPitch);
+            return;
+        }
+
+        // Проверяем, готовы ли мы нанести удар (ПАДАЕМ + В РАДИУСЕ + КД ГОТОВ)
+        boolean readyToHit = mc.player.fallDistance > 0.0F
+                && PlayerUtils.isWithin(target, attackRangeSync.get())
+                && mc.player.getAttackStrengthScale(0) >= 1.0f;
+
+        // Управление фазой удара (задерживаем камеру на цели на backstabHoldTime мс)
+        if (readyToHit) {
+            if (!isHitPhase) {
+                isHitPhase = true;
+                currentTarget = target;
+                hitPhaseEndTime = System.currentTimeMillis() + (long) (backstabHoldTime.get() * 1.0);
+            }
+        } else {
+            if (isHitPhase && System.currentTimeMillis() > hitPhaseEndTime) {
+                isHitPhase = false;
+                currentTarget = null;
             }
         }
 
         CameraMode modeToUse = cameraMode.get();
         if (modeToUse == CameraMode.MixAim) modeToUse = currentMixMode;
 
-        if (killauraReady) {
-            if (!isHitPhase || currentTarget != target) {
-                isHitPhase = true;
-                currentTarget = target;
-                long holdTime = 50;
-                if (modeToUse == CameraMode.Backstab || modeToUse == CameraMode.BackstabAlways) {
-                    holdTime = (long) (backstabHoldTime.get() * 1.0);
-                }
-                hitPhaseEndTime = System.currentTimeMillis() + holdTime;
-            }
-            aimAtTarget(mc.player, target, modeToUse);
-        } else {
-            switch (modeToUse) {
-                case Backstab -> handleBackstab(target);
-                case BackstabAlways -> handleBackstab(target); // То же поведение, но всегда активно
-                case Spinbot -> handleSpinbot(target);
-                case FakeLook -> handleFakeLook(target);
-                default -> {
-                    if (target != null) aim(mc.player, target);
-                }
-            }
+        // Если мы в фазе удара - жестко смотрим на цель
+        if (isHitPhase && currentTarget != null) {
+            float targetYaw = (float) Rotations.getYaw(currentTarget.getEyePosition());
+            float targetPitch = (float) Rotations.getPitch(currentTarget, bodyTarget.get());
+            mc.player.setYRot(targetYaw);
+            mc.player.setXRot(targetPitch);
+            return;
         }
-    }
 
-    private void aimAtTarget(LivingEntity player, Entity target, CameraMode mode) {
-        float yaw = (float) Rotations.getYaw(target.getEyePosition());
-        float pitch = (float) Rotations.getPitch(target, bodyTarget.get());
-
-        if (mode == CameraMode.Backstab || mode == CameraMode.BackstabAlways) {
-            spinYaw = approachAngle(spinYaw, yaw, backstabAimSpeed.get().floatValue());
-            spinPitch = approachAngle(spinPitch, pitch, backstabAimSpeed.get().floatValue());
-            player.setYRot(spinYaw);
-            player.setXRot(spinPitch);
-        } else {
-            player.setYRot(yaw);
-            player.setXRot(pitch);
+        // Иначе выполняем логику режима
+        switch (modeToUse) {
+            case Backstab, BackstabAlways -> handleBackstab(target);
+            case Spinbot -> handleSpinbot(target);
+            case FakeLook -> handleFakeLook(target);
+            default -> aim(mc.player, target);
         }
     }
 
     private void handleBackstab(Entity target) {
-        if (target == null) return;
+        // Всегда смотрим на 180 градусов от цели
         float yawToTarget = (float) Rotations.getYaw(target.getEyePosition());
         float oppositeYaw = yawToTarget + 180f;
 
