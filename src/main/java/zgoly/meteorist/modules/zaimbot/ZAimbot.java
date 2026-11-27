@@ -40,6 +40,7 @@ import net.minecraft.world.entity.monster.zombie.ZombifiedPiglin;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import zgoly.meteorist.Meteorist;
 import zgoly.meteorist.utils.config.MeteoristConfigManager;
@@ -64,12 +65,8 @@ public class ZAimbot extends Module {
     private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
             .name("range").description("The maximum range the entity can be to aim at it.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
-    private final Setting<EntityAgeTest> passiveMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
-            .name("passive-mob-age-filter").defaultValue(EntityAgeTest.Adult).build()
-    );
-    private final Setting<EntityAgeTest> hostileMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
-            .name("hostile-mob-age-filter").defaultValue(EntityAgeTest.Both).build()
-    );
+    private final Setting<EntityAgeTest> passiveMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>().name("passive-mob-age-filter").defaultValue(EntityAgeTest.Adult).build());
+    private final Setting<EntityAgeTest> hostileMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>().name("hostile-mob-age-filter").defaultValue(EntityAgeTest.Both).build());
     private final Setting<Boolean> ignoreNamed = sgFilter.add(new BoolSetting.Builder().name("ignore-named").defaultValue(false).build());
     private final Setting<Boolean> ignorePassive = sgFilter.add(new BoolSetting.Builder().name("ignore-passive").defaultValue(true).build());
     private final Setting<Boolean> ignoreTamed = sgFilter.add(new BoolSetting.Builder().name("ignore-tamed").defaultValue(false).build());
@@ -95,24 +92,32 @@ public class ZAimbot extends Module {
     private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder().name("speed-yaw").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantYaw.get()).build());
     private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder().name("speed-pitch").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantPitch.get()).build());
 
-    // --- Snap Backstab (Ультра-быстрые настройки) ---
+    // --- Snap Backstab ---
     private final Setting<Boolean> snapBackstab = sgSnap.add(new BoolSetting.Builder().name("snap-backstab").description("Смотреть спиной к игроку, мгновенно снапать на удар и корректировать движение.").defaultValue(false).build());
-    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа на игрока. 180 = мгновенно за 1 тик.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
-    private final Setting<Double> holdTime = sgSnap.add(new DoubleSetting.Builder().name("hold-time").description("Задержка на игроке (мс). 0 = ультра-быстро.").defaultValue(0.0).min(0.0).sliderMax(100.0).visible(snapBackstab::get).build());
+    
+    // Новые настройки прицеливания (2 модуля)
+    public enum AimPointMode { Center, RandomBody, NearestRay }
+    private final Setting<AimPointMode> aimPointMode = sgSnap.add(new EnumSetting.Builder<AimPointMode>()
+            .name("aim-point-mode")
+            .description("Куда целиться при снапе: Center, RandomBody (рандом по телу), NearestRay (ближайший луч).")
+            .defaultValue(AimPointMode.RandomBody)
+            .visible(snapBackstab::get)
+            .build()
+    );
+
+    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа. 180 = мгновенно.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
     private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").description("Скорость отворота спиной. 180 = мгновенно.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
-    private final Setting<Double> attackRangeSync = sgSnap.add(new DoubleSetting.Builder().name("attack-range-sync").description("Дистанция для зажатия S (когда мы на земле).").defaultValue(3.0).min(1.0).sliderMax(5.0).visible(snapBackstab::get).build());
     private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Радиус, в котором бот сам будет прыгать на криты.").defaultValue(6.0).min(3.0).sliderMax(8.0).visible(snapBackstab::get).build());
-    private final Setting<Integer> pounceCooldown = sgSnap.add(new IntSetting.Builder().name("pounce-cooldown").description("Задержка между автопрыжками (мс).").defaultValue(300).min(100).sliderMax(1000).visible(snapBackstab::get).build());
+    private final Setting<Integer> pounceCooldown = sgSnap.add(new IntSetting.Builder().name("pounce-cooldown").description("Задержка между прыжками (мс). 0 = без задержки.").defaultValue(0).min(0).sliderMax(1000).visible(snapBackstab::get).build());
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
     
-    private PounceState pounceState = PounceState.IDLE;
+    private PounceState pounceState = PounceState.GROUND;
     private long pounceStartTime = 0;
-    private boolean pounceJumped = false;
     private long lastPounceTime = 0;
     private boolean keysManaged = false;
 
-    private enum PounceState { IDLE, BACKING_UP, POUNCING, AIRBORNE }
+    private enum PounceState { GROUND, JUMPING, AIRBORNE }
 
     public ZAimbot() {
         super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with snap backstab.");
@@ -186,13 +191,12 @@ public class ZAimbot extends Module {
 
     @Override
     public void onActivate() {
-        pounceState = PounceState.IDLE;
+        pounceState = PounceState.GROUND;
         releaseManagedKeys();
     }
 
     @Override
     public void onDeactivate() {
-        // ИСПРАВЛЕНИЕ ЗАЛИПАНИЯ КЛАВИШ: Принудительно отпускаем все клавиши при выключении
         releaseManagedKeys();
     }
 
@@ -200,14 +204,14 @@ public class ZAimbot extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
         if (!snapBackstab.get()) {
-            if (keysManaged) releaseManagedKeys(); // Если выключили фичу, отпускаем клавиши
+            if (keysManaged) releaseManagedKeys();
             return;
         }
 
         Entity target = TargetUtils.get(this::entityCheck, priority.get());
         if (target == null) {
-            if (pounceState != PounceState.IDLE || keysManaged) {
-                pounceState = PounceState.IDLE;
+            if (pounceState != PounceState.GROUND || keysManaged) {
+                pounceState = PounceState.GROUND;
                 releaseManagedKeys();
             }
             return;
@@ -232,47 +236,44 @@ public class ZAimbot extends Module {
         double dist = mc.player.distanceTo(target);
         long now = System.currentTimeMillis();
 
-        // Автоматический прыжок: если мы на земле и цель в радиусе pounceRange (6 блоков)
-        if (pounceState == PounceState.IDLE || pounceState == PounceState.BACKING_UP) {
-            if (mc.player.onGround() && dist <= pounceRange.get() && (now - lastPounceTime) > pounceCooldown.get()) {
-                pounceState = PounceState.POUNCING;
-                pounceStartTime = now;
-                pounceJumped = false;
-            }
-        }
+        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround()
+                && !mc.player.isInWater() && !mc.player.onClimbable() && !mc.player.isPassenger();
 
-        switch (pounceState) {
-            case IDLE:
-            case BACKING_UP:
-                // Мы на земле, ждем прыжка. Отворачиваемся спиной и жмем S.
-                faceAway(target);
-                setKeys(false, true, false, null); // S нажат, Прыжок не трогаем
-                break;
-                
-            case POUNCING:
-                // Совершаем прыжок
-                if (!pounceJumped) {
-                    faceTargetInstant(target);
-                    setKeys(true, false, true, true); // W + Ctrl + Space
-                    pounceJumped = true;
-                    pounceStartTime = now;
-                } else if (now - pounceStartTime >= holdTime.get().longValue()) {
-                    mc.options.keyJump.setDown(false); // Отпускаем пробел
-                    pounceState = PounceState.AIRBORNE; // Переходим в полет
-                    lastPounceTime = now;
-                }
-                break;
-                
-            case AIRBORNE:
-                // Мы в воздухе. Смотрим на игрока, чтобы ZKillaura зафиксировала крит.
+        if (pounceState == PounceState.GROUND) {
+            // На земле: смотрим спиной, жмем S
+            faceAway(target);
+            setKeys(false, true, false, null);
+            
+            // Условие для автоматического прыжка
+            if (mc.player.onGround() && dist <= pounceRange.get() && (now - lastPounceTime) > pounceCooldown.get()) {
+                pounceState = PounceState.JUMPING;
+                pounceStartTime = now;
+            }
+        } 
+        else if (pounceState == PounceState.JUMPING) {
+            // Только что прыгнули: мгновенно смотрим на игрока и жмем W+Space
+            faceTargetInstant(target);
+            setKeys(true, false, true, true); // W + Ctrl + Space
+            
+            pounceState = PounceState.AIRBORNE;
+        } 
+        else if (pounceState == PounceState.AIRBORNE) {
+            // Мы в воздухе
+            if (isFalling) {
+                // Если падаем (крит-окно): смотрим на игрока, чтобы ZKillaura ударила
                 faceTargetInstant(target);
-                setKeys(true, false, true, null); // W + Ctrl, прыжок не трогаем
-                
-                // Если приземлились — возвращаемся в исходное состояние
-                if (mc.player.onGround()) {
-                    pounceState = PounceState.BACKING_UP;
-                }
-                break;
+                setKeys(true, false, true, false); // W + Ctrl
+            } else {
+                // Если летим вверх: снова отворачиваемся спиной
+                faceAway(target);
+                setKeys(false, true, false, null); // S
+            }
+
+            // Как только приземлились — моментально переходим в GROUND без задержек
+            if (mc.player.onGround()) {
+                pounceState = PounceState.GROUND;
+                lastPounceTime = now;
+            }
         }
     }
 
@@ -290,12 +291,64 @@ public class ZAimbot extends Module {
     }
 
     private void faceTargetInstant(Entity target) {
-        Vec3 predictedPos = target.position().add(target.getDeltaMovement().scale(targetMovementPrediction.get()));
-        float yaw = (float) Rotations.getYaw(predictedPos);
-        float pitch = (float) Rotations.getPitch(target, bodyTarget.get());
+        Vec3 aimPoint = getAimPoint(target);
+        float yaw = (float) Rotations.getYaw(aimPoint);
+        float pitch = (float) Rotations.getPitch(aimPoint);
 
         if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) mc.player.setYRot(yaw);
         if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) mc.player.setXRot(pitch);
+    }
+
+    // --- НОВАЯ ЛОГИКА ВЫБОРА ТОЧКИ ПОПАДАНИЯ ---
+    private Vec3 getAimPoint(Entity target) {
+        AABB box = target.getBoundingBox();
+        
+        if (aimPointMode.get() == AimPointMode.RandomBody) {
+            // Рандом по всему телу
+            double x = box.minX + Math.random() * (box.maxX - box.minX);
+            double y = box.minY + Math.random() * (box.maxY - box.minY);
+            double z = box.minZ + Math.random() * (box.maxZ - box.minZ);
+            return new Vec3(x, y, z);
+        } 
+        else if (aimPointMode.get() == AimPointMode.NearestRay) {
+            // Ближайший луч с легкой рандомизацией
+            Vec3 eye = mc.player.getEyePosition();
+            Vec3 look = mc.player.getViewVector(1.0f);
+            Vec3 hit = rayAABB(eye, look, box);
+            if (hit != null) {
+                // Легкий рандом, чтобы не бить в 1 пиксель
+                return hit.add((Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15);
+            }
+            return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
+        }
+        
+        // По умолчанию (Center) - бьем в центр хитбокса (грудь/голова)
+        return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
+    }
+
+    private Vec3 rayAABB(Vec3 origin, Vec3 dir, AABB box) {
+        double tMin = 0.0D;
+        double tMax = Double.MAX_VALUE;
+        for (int i = 0; i < 3; i++) {
+            double originC = i == 0 ? origin.x : (i == 1 ? origin.y : origin.z);
+            double dirC = i == 0 ? dir.x : (i == 1 ? dir.y : dir.z);
+            double minC = i == 0 ? box.minX : (i == 1 ? box.minY : box.minZ);
+            double maxC = i == 0 ? box.maxX : (i == 1 ? box.maxY : box.maxZ);
+
+            if (Math.abs(dirC) < 1.0E-7D) {
+                if (originC < minC || originC > maxC) return null;
+            } else {
+                double t1 = (minC - originC) / dirC;
+                double t2 = (maxC - originC) / dirC;
+                if (t1 > t2) { double temp = t1; t1 = t2; t2 = temp; }
+                tMin = Math.max(tMin, t1);
+                tMax = Math.min(tMax, t2);
+                if (tMin > tMax) return null;
+            }
+        }
+        if (tMin < 0) tMin = tMax;
+        if (tMin < 0) return null;
+        return origin.add(dir.scale(tMin));
     }
 
     private void setKeys(boolean w, boolean s, boolean sprint, Boolean jump) {
