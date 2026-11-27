@@ -240,7 +240,8 @@ public class ZAimbot extends Module {
     // --- SNAP BACKSTAB LOGIC (Обычный) ---
     private void handleSnapBackstab(LivingEntity target) {
         boolean isJumping = mc.options.keyJump.isDown();
-        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.isOnClimbable();
+        // ИСПРАВЛЕНО: isOnClimbable() заменен на onClimbable()
+        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.onClimbable();
 
         if (isJumping || isFalling) {
             // Прыгаем/падаем: снап на игрока
@@ -257,7 +258,8 @@ public class ZAimbot extends Module {
     private void handleHvH360(LivingEntity target) {
         double dist = mc.player.distanceTo(target);
         boolean isJumping = mc.options.keyJump.isDown();
-        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.isOnClimbable();
+        // ИСПРАВЛЕНО: isOnClimbable() заменен на onClimbable()
+        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.onClimbable();
 
         // 1. Вращение камеры
         if (isJumping || isFalling) {
@@ -281,7 +283,8 @@ public class ZAimbot extends Module {
             mc.options.keyRight.setDown(false);
         } else {
             // Если близко (меньше 3 блоков) — корректируем движение по направлению к игроку относительно нашего текущего угла
-            float targetYaw = Rotations.getYaw(target.position());
+            // ИСПРАВЛЕНО: приведение к float добавлено
+            float targetYaw = (float) Rotations.getYaw(target.position());
             float yawDiff = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
 
             mc.options.keyUp.setDown(false);
@@ -382,7 +385,7 @@ public class ZAimbot extends Module {
     private void setKeys(boolean w, boolean s, boolean sprint, Boolean jump) {
         mc.options.keyUp.setDown(w);
         mc.options.keyDown.setDown(s);
-        if (sprint) mc.options.keySprint.setDown(true); // Спринт работает при W
+        if (sprint) mc.options.keySprint.setDown(true);
         if (jump != null) {
             mc.options.keyJump.setDown(jump);
         }
