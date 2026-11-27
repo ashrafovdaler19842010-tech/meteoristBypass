@@ -63,7 +63,7 @@ public class ZAimbot extends Module {
             .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityTypes.PLAYER).build()
     );
     private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
-            .name("range").description("The maximum range the entity can be to aim at it.").defaultValue(4.5).min(0).sliderMax(6).build()
+            .name("range").description("The maximum range the entity can be to aim at it.").defaultValue(12.0).min(0).sliderMax(12.0).build()
     );
     private final Setting<EntityAgeTest> passiveMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>().name("passive-mob-age-filter").defaultValue(EntityAgeTest.Adult).build());
     private final Setting<EntityAgeTest> hostileMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>().name("hostile-mob-age-filter").defaultValue(EntityAgeTest.Both).build());
@@ -95,7 +95,6 @@ public class ZAimbot extends Module {
     // --- Snap Backstab ---
     private final Setting<Boolean> snapBackstab = sgSnap.add(new BoolSetting.Builder().name("snap-backstab").description("Смотреть спиной к игроку, мгновенно снапать на удар и корректировать движение.").defaultValue(false).build());
     
-    // Новые настройки прицеливания (2 модуля)
     public enum AimPointMode { Center, RandomBody, NearestRay }
     private final Setting<AimPointMode> aimPointMode = sgSnap.add(new EnumSetting.Builder<AimPointMode>()
             .name("aim-point-mode")
@@ -105,19 +104,15 @@ public class ZAimbot extends Module {
             .build()
     );
 
-    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа. 180 = мгновенно.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
+    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа на игрока. 180 = мгновенно.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
     private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").description("Скорость отворота спиной. 180 = мгновенно.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
-    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Радиус, в котором бот сам будет прыгать на криты.").defaultValue(6.0).min(3.0).sliderMax(8.0).visible(snapBackstab::get).build());
-    private final Setting<Integer> pounceCooldown = sgSnap.add(new IntSetting.Builder().name("pounce-cooldown").description("Задержка между прыжками (мс). 0 = без задержки.").defaultValue(0).min(0).sliderMax(1000).visible(snapBackstab::get).build());
+    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Радиус, в котором бот сам будет прыгать на криты.").defaultValue(12.0).min(3.0).sliderMax(12.0).visible(snapBackstab::get).build());
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
     
-    private PounceState pounceState = PounceState.GROUND;
-    private long pounceStartTime = 0;
-    private long lastPounceTime = 0;
+    private LivingEntity stickyTarget = null;
+    private int jumpTick = 0;
     private boolean keysManaged = false;
-
-    private enum PounceState { GROUND, JUMPING, AIRBORNE }
 
     public ZAimbot() {
         super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with snap backstab.");
@@ -191,12 +186,15 @@ public class ZAimbot extends Module {
 
     @Override
     public void onActivate() {
-        pounceState = PounceState.GROUND;
+        stickyTarget = null; // Сброс цели при включении
+        jumpTick = 0;
         releaseManagedKeys();
     }
 
     @Override
     public void onDeactivate() {
+        stickyTarget = null; // Сброс цели при выключении
+        jumpTick = 0;
         releaseManagedKeys();
     }
 
@@ -208,16 +206,17 @@ public class ZAimbot extends Module {
             return;
         }
 
-        Entity target = TargetUtils.get(this::entityCheck, priority.get());
-        if (target == null) {
-            if (pounceState != PounceState.GROUND || keysManaged) {
-                pounceState = PounceState.GROUND;
-                releaseManagedKeys();
-            }
+        // Фиксация цели (Sticky Target)
+        if (stickyTarget == null || !stickyTarget.isAlive() || mc.player.distanceTo(stickyTarget) > pounceRange.get()) {
+            stickyTarget = TargetUtils.get(this::entityCheck, priority.get());
+        }
+
+        if (stickyTarget == null) {
+            if (keysManaged) releaseManagedKeys();
             return;
         }
 
-        handleSnapLogic(target);
+        handleSnapLogic(stickyTarget);
     }
 
     @EventHandler
@@ -232,47 +231,44 @@ public class ZAimbot extends Module {
         aim(mc.player, target);
     }
 
-    private void handleSnapLogic(Entity target) {
+    private void handleSnapLogic(LivingEntity target) {
         double dist = mc.player.distanceTo(target);
-        long now = System.currentTimeMillis();
-
+        
         boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround()
                 && !mc.player.isInWater() && !mc.player.onClimbable() && !mc.player.isPassenger();
 
-        if (pounceState == PounceState.GROUND) {
-            // На земле: смотрим спиной, жмем S
-            faceAway(target);
-            setKeys(false, true, false, null);
-            
-            // Условие для автоматического прыжка
-            if (mc.player.onGround() && dist <= pounceRange.get() && (now - lastPounceTime) > pounceCooldown.get()) {
-                pounceState = PounceState.JUMPING;
-                pounceStartTime = now;
-            }
-        } 
-        else if (pounceState == PounceState.JUMPING) {
-            // Только что прыгнули: мгновенно смотрим на игрока и жмем W+Space
-            faceTargetInstant(target);
-            setKeys(true, false, true, true); // W + Ctrl + Space
-            
-            pounceState = PounceState.AIRBORNE;
-        } 
-        else if (pounceState == PounceState.AIRBORNE) {
-            // Мы в воздухе
-            if (isFalling) {
-                // Если падаем (крит-окно): смотрим на игрока, чтобы ZKillaura ударила
-                faceTargetInstant(target);
-                setKeys(true, false, true, false); // W + Ctrl
-            } else {
-                // Если летим вверх: снова отворачиваемся спиной
-                faceAway(target);
-                setKeys(false, true, false, null); // S
-            }
+        // Ультра-быстрый тап пробела (Bunny Hop)
+        if (jumpTick > 0) {
+            jumpTick--;
+            mc.options.keyJump.setDown(true);
+        } else {
+            mc.options.keyJump.setDown(false);
+        }
 
-            // Как только приземлились — моментально переходим в GROUND без задержек
-            if (mc.player.onGround()) {
-                pounceState = PounceState.GROUND;
-                lastPounceTime = now;
+        if (isFalling) {
+            // Мы падаем (крит-окно): мгновенный снап на игрока, чтобы ZKillaura ударила
+            faceTargetInstant(target);
+            setKeys(true, false, false, null); // Нажимаем W чтобы не терять инерцию в его сторону
+        } else {
+            // Мы на земле или летим вверх
+            if (dist > 1.5) {
+                // Догоняем игрока
+                faceAway(target);
+                setKeys(false, true, false, null); // Зажимаем S
+                if (mc.player.onGround()) {
+                    jumpTick = 1; // Мгновенный тап прыжка (без задержек)
+                }
+            } else if (dist < 1.0) {
+                // Если игрок нас толкнул и мы внутри хитбокса — отходим
+                faceAway(target);
+                setKeys(true, false, false, null); // Зажимаем W (так как спина, W = отойти)
+            } else {
+                // Мы в комфортной зоне (от 1 до 1.5 блоков)
+                faceAway(target);
+                setKeys(false, false, false, null); // Отпускаем W/S чтобы не прижиматься
+                if (mc.player.onGround()) {
+                    jumpTick = 1; // Прыгаем на месте для крита
+                }
             }
         }
     }
@@ -299,12 +295,11 @@ public class ZAimbot extends Module {
         if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) mc.player.setXRot(pitch);
     }
 
-    // --- НОВАЯ ЛОГИКА ВЫБОРА ТОЧКИ ПОПАДАНИЯ ---
     private Vec3 getAimPoint(Entity target) {
         AABB box = target.getBoundingBox();
         
         if (aimPointMode.get() == AimPointMode.RandomBody) {
-            // Рандом по всему телу
+            // Рандом по всему телу (от ног до макушки)
             double x = box.minX + Math.random() * (box.maxX - box.minX);
             double y = box.minY + Math.random() * (box.maxY - box.minY);
             double z = box.minZ + Math.random() * (box.maxZ - box.minZ);
@@ -316,13 +311,11 @@ public class ZAimbot extends Module {
             Vec3 look = mc.player.getViewVector(1.0f);
             Vec3 hit = rayAABB(eye, look, box);
             if (hit != null) {
-                // Легкий рандом, чтобы не бить в 1 пиксель
                 return hit.add((Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15);
             }
             return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
         }
         
-        // По умолчанию (Center) - бьем в центр хитбокса (грудь/голова)
         return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
     }
 
