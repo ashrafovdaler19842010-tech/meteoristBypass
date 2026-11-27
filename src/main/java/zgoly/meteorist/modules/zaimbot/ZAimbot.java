@@ -186,14 +186,14 @@ public class ZAimbot extends Module {
 
     @Override
     public void onActivate() {
-        stickyTarget = null; // Сброс цели при включении
+        stickyTarget = null;
         jumpTick = 0;
         releaseManagedKeys();
     }
 
     @Override
     public void onDeactivate() {
-        stickyTarget = null; // Сброс цели при выключении
+        stickyTarget = null;
         jumpTick = 0;
         releaseManagedKeys();
     }
@@ -206,9 +206,10 @@ public class ZAimbot extends Module {
             return;
         }
 
-        // Фиксация цели (Sticky Target)
+        // --- ИСПРАВЛЕННЫЙ БЛОК ПОИСКА ЦЕЛИ ---
         if (stickyTarget == null || !stickyTarget.isAlive() || mc.player.distanceTo(stickyTarget) > pounceRange.get()) {
-            stickyTarget = TargetUtils.get(this::entityCheck, priority.get());
+            Entity found = TargetUtils.get(this::entityCheck, priority.get());
+            stickyTarget = (found instanceof LivingEntity living) ? living : null;
         }
 
         if (stickyTarget == null) {
