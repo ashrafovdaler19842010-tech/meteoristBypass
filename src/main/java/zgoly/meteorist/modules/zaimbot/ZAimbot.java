@@ -48,7 +48,6 @@ import zgoly.meteorist.utils.config.MeteoristConfigManager;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.Random;
 import java.util.Set;
 
 import static meteordevelopment.meteorclient.gui.renderer.GuiRenderer.COPY;
@@ -57,291 +56,68 @@ import static zgoly.meteorist.utils.MeteoristUtils.calculateFov;
 public class ZAimbot extends Module {
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAim = settings.createGroup("Aim");
-    private final SettingGroup sgSnap = settings.createGroup("Snap Backstab"); // Новая группа
+    private final SettingGroup sgSnap = settings.createGroup("Snap Backstab");
 
     // --- Filter ---
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
-            .name("entities")
-            .description("Entities to aim at.")
-            .onlyAttackable()
-            .defaultValue(EntityTypes.PLAYER) // ИСПРАВЛЕНО: EntityTypes вместо EntityType
-            .build()
+            .name("entities").description("Entities to aim at.").onlyAttackable().defaultValue(EntityTypes.PLAYER).build()
     );
-
     private final Setting<Double> range = sgFilter.add(new DoubleSetting.Builder()
-            .name("range")
-            .description("The maximum range the entity can be to aim at it.")
-            .defaultValue(4.5)
-            .min(0)
-            .sliderMax(6)
-            .build()
+            .name("range").description("The maximum range the entity can be to aim at it.").defaultValue(4.5).min(0).sliderMax(6).build()
     );
-
     private final Setting<EntityAgeTest> passiveMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
-            .name("passive-mob-age-filter")
-            .description("Determines the age of passive mobs to target (animals, villagers).")
-            .defaultValue(EntityAgeTest.Adult)
-            .build()
+            .name("passive-mob-age-filter").defaultValue(EntityAgeTest.Adult).build()
     );
-
     private final Setting<EntityAgeTest> hostileMobAgeFilter = sgFilter.add(new EnumSetting.Builder<EntityAgeTest>()
-            .name("hostile-mob-age-filter")
-            .description("Determines the age of hostile mobs to target (zombies, piglins, hoglins, zoglins).")
-            .defaultValue(EntityAgeTest.Both)
-            .build()
+            .name("hostile-mob-age-filter").defaultValue(EntityAgeTest.Both).build()
     );
-
-    private final Setting<Boolean> ignoreNamed = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-named")
-            .description("Whether or not to aim at mobs with a name.")
-            .defaultValue(false)
-            .build()
-    );
-
-    private final Setting<Boolean> ignorePassive = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-passive")
-            .description("Will only aim at sometimes passive mobs if they are targeting you.")
-            .defaultValue(true)
-            .build()
-    );
-
-    private final Setting<Boolean> ignoreTamed = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-tamed")
-            .description("Will avoid aiming at mobs you tamed.")
-            .defaultValue(false)
-            .build()
-    );
-
-    private final Setting<Boolean> ignoreCreative = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-creative")
-            .description("Will avoid aiming at players in creative mode.")
-            .defaultValue(true)
-            .build()
-    );
-
-    private final Setting<Boolean> ignoreFriends = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-friends")
-            .description("Will avoid aiming at players on your friends list.")
-            .defaultValue(true)
-            .build()
-    );
-
-    private final Setting<Boolean> ignoreShield = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-shield")
-            .description("Will avoid aiming at players who are using a shield.")
-            .defaultValue(false)
-            .build()
-    );
-
-    private final Setting<Boolean> useFovRange = sgFilter.add(new BoolSetting.Builder()
-            .name("use-fov-range")
-            .description("Restrict aiming to entities within the specified FOV.")
-            .defaultValue(true)
-            .build()
-    );
-
-    private final Setting<Double> fovRange = sgFilter.add(new DoubleSetting.Builder()
-            .name("fov-range")
-            .description("Maximum Field of View (FOV) range for targeting entities.")
-            .sliderRange(0, 180)
-            .defaultValue(90)
-            .visible(useFovRange::get)
-            .build()
-    );
-
-    private final Setting<Boolean> ignoreWalls = sgFilter.add(new BoolSetting.Builder()
-            .name("ignore-walls")
-            .description("Allow aiming through walls.")
-            .defaultValue(false)
-            .build()
-    );
-
-    private final Setting<SortPriority> priority = sgFilter.add(new EnumSetting.Builder<SortPriority>()
-            .name("priority")
-            .description("Sorting method to prioritize targets within range.")
-            .defaultValue(SortPriority.ClosestAngle)
-            .build()
-    );
-
-    private final Setting<OperationMode> itemFilteringMode = sgFilter.add(new EnumSetting.Builder<OperationMode>()
-            .name("item-filtering-mode")
-            .description("Defines how held items control aimbot activation.")
-            .defaultValue(OperationMode.Blacklist)
-            .build()
-    );
-
-    private final Setting<List<Item>> itemBlacklist = sgFilter.add(new ItemListSetting.Builder()
-            .name("item-blacklist")
-            .description("Aimbot will NOT activate when holding these items.")
-            .defaultValue(Items.COBWEB)
-            .visible(() -> itemFilteringMode.get() == OperationMode.Blacklist)
-            .build()
-    );
-
-    private final Setting<List<Item>> itemWhitelist = sgFilter.add(new ItemListSetting.Builder()
-            .name("item-whitelist")
-            .description("Aimbot only activates when holding one of these items.")
-            .defaultValue(Items.BOW, Items.CROSSBOW, Items.TRIDENT)
-            .visible(() -> itemFilteringMode.get() == OperationMode.Whitelist)
-            .build()
-    );
+    private final Setting<Boolean> ignoreNamed = sgFilter.add(new BoolSetting.Builder().name("ignore-named").defaultValue(false).build());
+    private final Setting<Boolean> ignorePassive = sgFilter.add(new BoolSetting.Builder().name("ignore-passive").defaultValue(true).build());
+    private final Setting<Boolean> ignoreTamed = sgFilter.add(new BoolSetting.Builder().name("ignore-tamed").defaultValue(false).build());
+    private final Setting<Boolean> ignoreCreative = sgFilter.add(new BoolSetting.Builder().name("ignore-creative").defaultValue(true).build());
+    private final Setting<Boolean> ignoreFriends = sgFilter.add(new BoolSetting.Builder().name("ignore-friends").defaultValue(true).build());
+    private final Setting<Boolean> ignoreShield = sgFilter.add(new BoolSetting.Builder().name("ignore-shield").defaultValue(false).build());
+    private final Setting<Boolean> useFovRange = sgFilter.add(new BoolSetting.Builder().name("use-fov-range").defaultValue(true).build());
+    private final Setting<Double> fovRange = sgFilter.add(new DoubleSetting.Builder().name("fov-range").sliderRange(0, 180).defaultValue(90).visible(useFovRange::get).build());
+    private final Setting<Boolean> ignoreWalls = sgFilter.add(new BoolSetting.Builder().name("ignore-walls").defaultValue(false).build());
+    private final Setting<SortPriority> priority = sgFilter.add(new EnumSetting.Builder<SortPriority>().name("priority").defaultValue(SortPriority.ClosestAngle).build());
+    private final Setting<OperationMode> itemFilteringMode = sgFilter.add(new EnumSetting.Builder<OperationMode>().name("item-filtering-mode").defaultValue(OperationMode.Blacklist).build());
+    private final Setting<List<Item>> itemBlacklist = sgFilter.add(new ItemListSetting.Builder().name("item-blacklist").defaultValue(Items.COBWEB).visible(() -> itemFilteringMode.get() == OperationMode.Blacklist).build());
+    private final Setting<List<Item>> itemWhitelist = sgFilter.add(new ItemListSetting.Builder().name("item-whitelist").defaultValue(Items.BOW, Items.CROSSBOW, Items.TRIDENT).visible(() -> itemFilteringMode.get() == OperationMode.Whitelist).build());
 
     // --- Aim ---
-    public final Setting<Double> targetMovementPrediction = sgAim.add(new DoubleSetting.Builder()
-            .name("target-movement-prediction")
-            .description("Amount to predict the target's movement when aiming.")
-            .min(0)
-            .sliderMax(20)
-            .defaultValue(0)
-            .build()
-    );
-
-    private final Setting<AimAxes> aimAxes = sgAim.add(new EnumSetting.Builder<AimAxes>()
-            .name("aim-axes")
-            .description("Which rotational axes to adjust when aiming.")
-            .defaultValue(AimAxes.Both)
-            .build()
-    );
-
-    private final Setting<Target> bodyTarget = sgAim.add(new EnumSetting.Builder<Target>()
-            .name("aim-target")
-            .description("Part of the target entity's body to aim at.")
-            .defaultValue(Target.Head)
-            .build()
-    );
-
-    private final Setting<Boolean> instantYaw = sgAim.add(new BoolSetting.Builder()
-            .name("instant-yaw")
-            .description("Aim horizontally (yaw) at the target entity instantly.")
-            .defaultValue(false)
-            .build()
-    );
-
-    private final Setting<Boolean> instantPitch = sgAim.add(new BoolSetting.Builder()
-            .name("instant-pitch")
-            .description("Aim vertically (pitch) at the target entity instantly.")
-            .defaultValue(false)
-            .build()
-    );
-
-    private final Setting<Boolean> syncYawWithCooldown = sgAim.add(new BoolSetting.Builder()
-            .name("sync-yaw-with-cooldown")
-            .description("Synchronize yaw aim speed with attack cooldown progress.")
-            .defaultValue(false)
-            .visible(() -> !instantYaw.get())
-            .build()
-    );
-
-    private final Setting<Boolean> syncPitchWithCooldown = sgAim.add(new BoolSetting.Builder()
-            .name("sync-pitch-with-cooldown")
-            .description("Synchronize pitch aim speed with attack cooldown progress.")
-            .defaultValue(false)
-            .visible(() -> !instantPitch.get())
-            .build()
-    );
-
-    private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder()
-            .name("speed-yaw")
-            .description("Speed at which to adjust horizontal (yaw) aim.")
-            .min(0)
-            .defaultValue(1)
-            .sliderRange(0.1, 10)
-            .visible(() -> !instantYaw.get())
-            .build()
-    );
-
-    private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder()
-            .name("speed-pitch")
-            .description("Speed at which to adjust vertical (pitch) aim.")
-            .min(0)
-            .defaultValue(1)
-            .sliderRange(0.1, 10)
-            .visible(() -> !instantPitch.get())
-            .build()
-    );
+    public final Setting<Double> targetMovementPrediction = sgAim.add(new DoubleSetting.Builder().name("target-movement-prediction").min(0).sliderMax(20).defaultValue(0).build());
+    private final Setting<AimAxes> aimAxes = sgAim.add(new EnumSetting.Builder<AimAxes>().name("aim-axes").defaultValue(AimAxes.Both).build());
+    private final Setting<Target> bodyTarget = sgAim.add(new EnumSetting.Builder<Target>().name("aim-target").defaultValue(Target.Head).build());
+    private final Setting<Boolean> instantYaw = sgAim.add(new BoolSetting.Builder().name("instant-yaw").defaultValue(false).build());
+    private final Setting<Boolean> instantPitch = sgAim.add(new BoolSetting.Builder().name("instant-pitch").defaultValue(false).build());
+    private final Setting<Boolean> syncYawWithCooldown = sgAim.add(new BoolSetting.Builder().name("sync-yaw-with-cooldown").defaultValue(false).visible(() -> !instantYaw.get()).build());
+    private final Setting<Boolean> syncPitchWithCooldown = sgAim.add(new BoolSetting.Builder().name("sync-pitch-with-cooldown").defaultValue(false).visible(() -> !instantPitch.get()).build());
+    private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder().name("speed-yaw").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantYaw.get()).build());
+    private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder().name("speed-pitch").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantPitch.get()).build());
 
     // --- Snap Backstab ---
-    private final Setting<Boolean> snapBackstab = sgSnap.add(new BoolSetting.Builder()
-            .name("snap-backstab")
-            .description("Смотреть спиной к игроку, мгновенно снапать на удар и корректировать движение W/S.")
-            .defaultValue(false)
-            .build()
-    );
-
-    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder()
-            .name("snap-speed")
-            .description("Скорость снапа на игрока. 180 = мгновенно.")
-            .defaultValue(180.0)
-            .min(1.0)
-            .sliderMax(180.0)
-            .visible(snapBackstab::get)
-            .build()
-    );
-
-    private final Setting<Double> holdTime = sgSnap.add(new DoubleSetting.Builder()
-            .name("hold-time")
-            .description("Время удержания камеры на игроке (мс). 0 = сразу отвернуться.")
-            .defaultValue(0.0)
-            .min(0.0)
-            .sliderMax(500.0)
-            .visible(snapBackstab::get)
-            .build()
-    );
-
-    private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder()
-            .name("return-speed")
-            .description("Скорость отворота спиной. 180 = мгновенно.")
-            .defaultValue(180.0)
-            .min(1.0)
-            .sliderMax(180.0)
-            .visible(snapBackstab::get)
-            .build()
-    );
-
-    private final Setting<Double> attackRangeSync = sgSnap.add(new DoubleSetting.Builder()
-            .name("attack-range-sync")
-            .description("Дистанция, при которой зажимается S вместо W.")
-            .defaultValue(3.0)
-            .min(1.0)
-            .sliderMax(5.0)
-            .visible(snapBackstab::get)
-            .build()
-    );
-
-    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder()
-            .name("pounce-range")
-            .description("Максимальная дистанция для совершения прыжка (W + Ctrl + Space).")
-            .defaultValue(6.0)
-            .min(3.0)
-            .sliderMax(8.0)
-            .visible(snapBackstab::get)
-            .build()
-    );
-
-    private final Setting<Integer> pounceCooldown = sgSnap.add(new IntSetting.Builder()
-            .name("pounce-cooldown")
-            .description("Задержка между прыжками (мс).")
-            .defaultValue(300)
-            .min(100)
-            .sliderMax(1000)
-            .visible(snapBackstab::get)
-            .build()
-    );
+    private final Setting<Boolean> snapBackstab = sgSnap.add(new BoolSetting.Builder().name("snap-backstab").description("Смотреть спиной к игроку, мгновенно снапать на удар и корректировать движение.").defaultValue(false).build());
+    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
+    private final Setting<Double> holdTime = sgSnap.add(new DoubleSetting.Builder().name("hold-time").description("Задержка на игроке (мс).").defaultValue(0.0).min(0.0).sliderMax(500.0).visible(snapBackstab::get).build());
+    private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
+    private final Setting<Double> attackRangeSync = sgSnap.add(new DoubleSetting.Builder().name("attack-range-sync").description("Дистанция для зажатия S.").defaultValue(3.0).min(1.0).sliderMax(5.0).visible(snapBackstab::get).build());
+    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Макс. дистанция для прыжка.").defaultValue(6.0).min(3.0).sliderMax(8.0).visible(snapBackstab::get).build());
+    private final Setting<Integer> pounceCooldown = sgSnap.add(new IntSetting.Builder().name("pounce-cooldown").defaultValue(300).min(100).sliderMax(1000).visible(snapBackstab::get).build());
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
-    private final Random random = new Random();
-
-    // Переменные для Snap Backstab
+    
+    // Переменные Snap Backstab
     private PounceState pounceState = PounceState.IDLE;
     private long pounceStartTime = 0;
     private boolean pounceJumped = false;
     private long lastPounceTime = 0;
     private boolean keysManaged = false;
 
-    private enum PounceState { IDLE, BACKING_UP, APPROACHING, POUNCING, AIRBORNE }
+    private enum PounceState { IDLE, BACKING_UP, APPROACHING, POUNCING, CRIT_SNAP }
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot that takes many settings into account when targeting.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with snap backstab.");
     }
 
     @Override
@@ -389,48 +165,24 @@ public class ZAimbot extends Module {
                 int index = trajectories.indexOf(trajectory);
                 if (index > 0) {
                     WButton moveUp = moveContainer.add(theme.button(Meteorist.ARROW_UP)).expandX().widget();
-                    moveUp.tooltip = "Move trajectory up.";
-                    moveUp.action = () -> {
-                        trajectories.remove(index);
-                        trajectories.add(index - 1, trajectory);
-                        fillWidget(theme, list);
-                    };
+                    moveUp.action = () -> { trajectories.remove(index); trajectories.add(index - 1, trajectory); fillWidget(theme, list); };
                 }
                 if (index < trajectories.size() - 1) {
                     WButton moveDown = moveContainer.add(theme.button(Meteorist.ARROW_DOWN)).expandX().widget();
-                    moveDown.tooltip = "Move trajectory down.";
-                    moveDown.action = () -> {
-                        trajectories.remove(index);
-                        trajectories.add(index + 1, trajectory);
-                        fillWidget(theme, list);
-                    };
+                    moveDown.action = () -> { trajectories.remove(index); trajectories.add(index + 1, trajectory); fillWidget(theme, list); };
                 }
             }
             WButton copy = controls.add(theme.button(COPY)).widget();
-            copy.tooltip = "Duplicate trajectory.";
-            copy.action = () -> {
-                trajectories.add(trajectories.indexOf(trajectory), trajectory.copy());
-                fillWidget(theme, list);
-            };
+            copy.action = () -> { trajectories.add(trajectories.indexOf(trajectory), trajectory.copy()); fillWidget(theme, list); };
             WMinus remove = controls.add(theme.minus()).widget();
-            remove.tooltip = "Remove trajectory.";
-            remove.action = () -> {
-                trajectories.remove(trajectory);
-                fillWidget(theme, list);
-            };
+            remove.action = () -> { trajectories.remove(trajectory); fillWidget(theme, list); };
         }
         if (!trajectories.isEmpty()) list.add(theme.horizontalSeparator()).expandX();
         WContainer controls = list.add(theme.horizontalList()).expandX().widget();
         WButton add = controls.add(theme.button("Add Trajectory")).expandX().widget();
-        add.action = () -> {
-            trajectories.add(new AimTrajectory());
-            fillWidget(theme, list);
-        };
+        add.action = () -> { trajectories.add(new AimTrajectory()); fillWidget(theme, list); };
         WButton removeAll = controls.add(theme.button("Remove All Trajectories")).expandX().widget();
-        removeAll.action = () -> {
-            trajectories.clear();
-            fillWidget(theme, list);
-        };
+        removeAll.action = () -> { trajectories.clear(); fillWidget(theme, list); };
         MeteoristConfigManager.configManager(theme, list, this);
     }
 
@@ -460,14 +212,11 @@ public class ZAimbot extends Module {
     @EventHandler
     private void onRender3D(Render3DEvent event) {
         if (mc.player == null || mc.level == null) return;
-        // Если включен Snap Backstab, камера управляется в onTick, чтобы влиять на движение
         if (snapBackstab.get()) return;
 
         Entity target = TargetUtils.get(this::entityCheck, priority.get());
         Item heldItem = mc.player.getMainHandItem().getItem();
-        if (itemFilteringMode.get() == OperationMode.Blacklist ?
-                itemBlacklist.get().contains(heldItem) :
-                !itemWhitelist.get().contains(heldItem)) return;
+        if (itemFilteringMode.get() == OperationMode.Blacklist ? itemBlacklist.get().contains(heldItem) : !itemWhitelist.get().contains(heldItem)) return;
         if (target == null) return;
         aim(mc.player, target);
     }
@@ -476,56 +225,47 @@ public class ZAimbot extends Module {
         double dist = mc.player.distanceTo(target);
         long now = System.currentTimeMillis();
 
-        // Стейт-машина
-        switch (pounceState) {
-            case IDLE:
-                pounceState = dist <= attackRangeSync.get() ? PounceState.BACKING_UP : PounceState.APPROACHING;
-                break;
-            case BACKING_UP:
-                if (dist > attackRangeSync.get()) pounceState = PounceState.APPROACHING;
-                break;
-            case APPROACHING:
-                if (dist <= attackRangeSync.get()) {
-                    pounceState = PounceState.BACKING_UP;
-                } else if (mc.player.onGround() && dist <= pounceRange.get() && (now - lastPounceTime) > pounceCooldown.get()) {
-                    pounceState = PounceState.POUNCING;
-                    pounceStartTime = now;
-                    pounceJumped = false;
-                }
-                break;
-            case POUNCING:
-                if (pounceJumped && (now - pounceStartTime >= holdTime.get().longValue())) {
-                    mc.options.keyJump.setDown(false);
-                    pounceState = mc.player.onGround() ? PounceState.APPROACHING : PounceState.AIRBORNE;
-                    lastPounceTime = now;
-                }
-                break;
-            case AIRBORNE:
-                if (mc.player.onGround()) {
-                    pounceState = dist <= attackRangeSync.get() ? PounceState.BACKING_UP : PounceState.APPROACHING;
-                }
-                break;
+        // Проверка на крит (падение). Если мы падаем — мы обязаны смотреть на игрока, чтобы ZKillaura ударила.
+        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround()
+                && !mc.player.isInWater() && !mc.player.onClimbable() && !mc.player.isPassenger();
+
+        // Если мы в процессе прыжка (POUNCING), мы должны завершить его
+        if (pounceState == PounceState.POUNCING) {
+            if (!pounceJumped) {
+                faceTargetInstant(target);
+                setKeys(true, false, true, true); // W + Ctrl + Space
+                pounceJumped = true;
+                pounceStartTime = now;
+            } else if (now - pounceStartTime >= holdTime.get().longValue()) {
+                mc.options.keyJump.setDown(false); // Отпускаем пробел
+                pounceState = PounceState.CRIT_SNAP; // Переходим в крит-снап
+                lastPounceTime = now;
+            }
+            return; // Выходим, чтобы не сбить прыжок
         }
 
-        // Управление камерой и клавишами
-        switch (pounceState) {
-            case BACKING_UP:
-            case APPROACHING:
-            case AIRBORNE:
+        if (isFalling) {
+            // МЫ ПАДАЕМ (критовый удар). Мгновенно наводимся на игрока, ZKillaura бьет.
+            pounceState = PounceState.CRIT_SNAP;
+            faceTargetInstant(target);
+            setKeys(true, false, true, null); // Нажимаем W чтобы не терять инерцию в сторону игрока, Jump не трогаем!
+        } else {
+            // Мы на земле или не падаем.
+            if (dist <= attackRangeSync.get()) {
+                pounceState = PounceState.BACKING_UP;
                 faceAway(target);
-                setKeys(false, true, false, false); // Отпускаем W, зажимаем S
-                break;
-            case POUNCING:
-                if (!pounceJumped) {
-                    // Мгновенный снап на игрока (используем логику aim с флагом снапа)
-                    aim(mc.player, target, true);
-                    setKeys(true, false, true, true); // W + Ctrl + Space
-                    pounceJumped = true;
+                setKeys(false, true, false, null); // Жмем S. Jump НЕ ТРОГАЕМ, чтобы можно было прыгать вручную!
+            } else {
+                // Больше 3 блоков
+                if (mc.player.onGround() && dist <= pounceRange.get() && (now - lastPounceTime) > pounceCooldown.get()) {
+                    pounceState = PounceState.POUNCING;
+                    pounceJumped = false;
                 } else {
-                    aim(mc.player, target, true);
-                    setKeys(true, false, true, false); // W + Ctrl
+                    pounceState = PounceState.APPROACHING;
+                    faceAway(target);
+                    setKeys(false, true, false, null); // Жмем S. Jump НЕ ТРОГАЕМ!
                 }
-                break;
+            }
         }
     }
 
@@ -533,7 +273,6 @@ public class ZAimbot extends Module {
         Vec3 aimPoint = target.position();
         float targetYaw = (float) Rotations.getYaw(aimPoint) + 180.0f;
         
-        // Плавный или мгновенный отворот
         float diff = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
         float step = Math.min(Math.abs(diff), returnSpeed.get().floatValue());
         mc.player.setYRot(mc.player.getYRot() + Math.signum(diff) * step);
@@ -543,11 +282,20 @@ public class ZAimbot extends Module {
         mc.player.setXRot(mc.player.getXRot() + Math.signum(pitchDiff) * pitchStep);
     }
 
-    private void setKeys(boolean w, boolean s, boolean sprint, boolean jump) {
+    private void faceTargetInstant(Entity target) {
+        Vec3 predictedPos = target.position().add(target.getDeltaMovement().scale(targetMovementPrediction.get()));
+        float yaw = (float) Rotations.getYaw(predictedPos);
+        float pitch = (float) Rotations.getPitch(target, bodyTarget.get());
+
+        if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) mc.player.setYRot(yaw);
+        if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) mc.player.setXRot(pitch);
+    }
+
+    private void setKeys(boolean w, boolean s, boolean sprint, Boolean jump) {
         mc.options.keyUp.setDown(w);
         mc.options.keyDown.setDown(s);
         mc.options.keySprint.setDown(sprint);
-        mc.options.keyJump.setDown(jump);
+        if (jump != null) mc.options.keyJump.setDown(jump);
         keysManaged = true;
     }
 
@@ -562,18 +310,11 @@ public class ZAimbot extends Module {
     }
 
     private void aim(LivingEntity player, Entity target) {
-        aim(player, target, false);
-    }
-
-    private void aim(LivingEntity player, Entity target, boolean useSnapSpeed) {
         Vec3 predictedPos = target.position().add(target.getDeltaMovement().scale(targetMovementPrediction.get()));
         float yaw = (float) Rotations.getYaw(predictedPos);
         float pitch;
         Item usedItem = mc.player.getMainHandItem().getItem();
-        AimTrajectory matchingTrajectory = trajectories.stream()
-                .filter(t -> t.items.get().contains(usedItem))
-                .findFirst()
-                .orElse(null);
+        AimTrajectory matchingTrajectory = trajectories.stream().filter(t -> t.items.get().contains(usedItem)).findFirst().orElse(null);
         if (matchingTrajectory != null) {
             pitch = calculatePitchWithTrajectory(player, target, matchingTrajectory);
         } else {
@@ -582,15 +323,6 @@ public class ZAimbot extends Module {
 
         float yawDifference = Mth.wrapDegrees(yaw - player.getYRot());
         float pitchDifference = Mth.wrapDegrees(pitch - player.getXRot());
-
-        float speedYawVal = useSnapSpeed ? (snapSpeed.get().floatValue() / 180.0f) : (speedYaw.get().floatValue() / 10.0f);
-        float speedPitchVal = useSnapSpeed ? (snapSpeed.get().floatValue() / 180.0f) : (speedPitch.get().floatValue() / 10.0f);
-
-        if (useSnapSpeed) {
-            if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) player.setYRot(yaw);
-            if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) player.setXRot(pitch);
-            return;
-        }
 
         if (instantYaw.get()) {
             if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) player.setYRot(yaw);
@@ -609,7 +341,6 @@ public class ZAimbot extends Module {
         }
     }
 
-    /// @see BowAimbot
     private float calculatePitchWithTrajectory(LivingEntity player, Entity target, AimTrajectory traj) {
         Vec3 playerEye = player.getEyePosition();
         Vec3 targetPos = target.position().add(0, target.getBoundingBox().getYsize() / 2, 0);
@@ -634,9 +365,7 @@ public class ZAimbot extends Module {
         if (!PlayerUtils.isWithin(entity, range.get())) return false;
         if (!entities.get().contains(entity.getType())) return false;
         if (ignoreNamed.get() && entity.hasCustomName()) return false;
-        if (ignoreTamed.get() && entity instanceof OwnableEntity ownable && Objects.equals(ownable.getOwner(), mc.player)) {
-            return false;
-        }
+        if (ignoreTamed.get() && entity instanceof OwnableEntity ownable && Objects.equals(ownable.getOwner(), mc.player)) return false;
         if (ignorePassive.get() && isPassive(entity)) return false;
         if (entity instanceof Player player) {
             if (ignoreCreative.get() && player.isCreative()) return false;
