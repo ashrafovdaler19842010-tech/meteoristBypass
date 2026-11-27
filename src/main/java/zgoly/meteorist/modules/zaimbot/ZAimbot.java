@@ -11,7 +11,6 @@ import meteordevelopment.meteorclient.gui.widgets.pressable.WMinus;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.friends.Friends;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.systems.modules.combat.BowAimbot;
 import meteordevelopment.meteorclient.utils.entity.EntityAgeTest;
 import meteordevelopment.meteorclient.utils.entity.SortPriority;
 import meteordevelopment.meteorclient.utils.entity.Target;
@@ -96,25 +95,24 @@ public class ZAimbot extends Module {
     private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder().name("speed-yaw").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantYaw.get()).build());
     private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder().name("speed-pitch").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantPitch.get()).build());
 
-    // --- Snap Backstab ---
+    // --- Snap Backstab (Ультра-быстрые настройки) ---
     private final Setting<Boolean> snapBackstab = sgSnap.add(new BoolSetting.Builder().name("snap-backstab").description("Смотреть спиной к игроку, мгновенно снапать на удар и корректировать движение.").defaultValue(false).build());
-    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
-    private final Setting<Double> holdTime = sgSnap.add(new DoubleSetting.Builder().name("hold-time").description("Задержка на игроке (мс).").defaultValue(0.0).min(0.0).sliderMax(500.0).visible(snapBackstab::get).build());
-    private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
-    private final Setting<Double> attackRangeSync = sgSnap.add(new DoubleSetting.Builder().name("attack-range-sync").description("Дистанция для зажатия S.").defaultValue(3.0).min(1.0).sliderMax(5.0).visible(snapBackstab::get).build());
-    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Макс. дистанция для прыжка.").defaultValue(6.0).min(3.0).sliderMax(8.0).visible(snapBackstab::get).build());
-    private final Setting<Integer> pounceCooldown = sgSnap.add(new IntSetting.Builder().name("pounce-cooldown").defaultValue(300).min(100).sliderMax(1000).visible(snapBackstab::get).build());
+    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа на игрока. 180 = мгновенно за 1 тик.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
+    private final Setting<Double> holdTime = sgSnap.add(new DoubleSetting.Builder().name("hold-time").description("Задержка на игроке (мс). 0 = ультра-быстро.").defaultValue(0.0).min(0.0).sliderMax(100.0).visible(snapBackstab::get).build());
+    private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").description("Скорость отворота спиной. 180 = мгновенно.").defaultValue(180.0).min(1.0).sliderMax(180.0).visible(snapBackstab::get).build());
+    private final Setting<Double> attackRangeSync = sgSnap.add(new DoubleSetting.Builder().name("attack-range-sync").description("Дистанция для зажатия S (когда мы на земле).").defaultValue(3.0).min(1.0).sliderMax(5.0).visible(snapBackstab::get).build());
+    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Радиус, в котором бот сам будет прыгать на криты.").defaultValue(6.0).min(3.0).sliderMax(8.0).visible(snapBackstab::get).build());
+    private final Setting<Integer> pounceCooldown = sgSnap.add(new IntSetting.Builder().name("pounce-cooldown").description("Задержка между автопрыжками (мс).").defaultValue(300).min(100).sliderMax(1000).visible(snapBackstab::get).build());
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
     
-    // Переменные Snap Backstab
     private PounceState pounceState = PounceState.IDLE;
     private long pounceStartTime = 0;
     private boolean pounceJumped = false;
     private long lastPounceTime = 0;
     private boolean keysManaged = false;
 
-    private enum PounceState { IDLE, BACKING_UP, APPROACHING, POUNCING, CRIT_SNAP }
+    private enum PounceState { IDLE, BACKING_UP, POUNCING, AIRBORNE }
 
     public ZAimbot() {
         super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with snap backstab.");
@@ -192,14 +190,23 @@ public class ZAimbot extends Module {
         releaseManagedKeys();
     }
 
+    @Override
+    public void onDeactivate() {
+        // ИСПРАВЛЕНИЕ ЗАЛИПАНИЯ КЛАВИШ: Принудительно отпускаем все клавиши при выключении
+        releaseManagedKeys();
+    }
+
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
-        if (!snapBackstab.get()) return;
+        if (!snapBackstab.get()) {
+            if (keysManaged) releaseManagedKeys(); // Если выключили фичу, отпускаем клавиши
+            return;
+        }
 
         Entity target = TargetUtils.get(this::entityCheck, priority.get());
         if (target == null) {
-            if (pounceState != PounceState.IDLE) {
+            if (pounceState != PounceState.IDLE || keysManaged) {
                 pounceState = PounceState.IDLE;
                 releaseManagedKeys();
             }
@@ -225,47 +232,47 @@ public class ZAimbot extends Module {
         double dist = mc.player.distanceTo(target);
         long now = System.currentTimeMillis();
 
-        // Проверка на крит (падение). Если мы падаем — мы обязаны смотреть на игрока, чтобы ZKillaura ударила.
-        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround()
-                && !mc.player.isInWater() && !mc.player.onClimbable() && !mc.player.isPassenger();
-
-        // Если мы в процессе прыжка (POUNCING), мы должны завершить его
-        if (pounceState == PounceState.POUNCING) {
-            if (!pounceJumped) {
-                faceTargetInstant(target);
-                setKeys(true, false, true, true); // W + Ctrl + Space
-                pounceJumped = true;
+        // Автоматический прыжок: если мы на земле и цель в радиусе pounceRange (6 блоков)
+        if (pounceState == PounceState.IDLE || pounceState == PounceState.BACKING_UP) {
+            if (mc.player.onGround() && dist <= pounceRange.get() && (now - lastPounceTime) > pounceCooldown.get()) {
+                pounceState = PounceState.POUNCING;
                 pounceStartTime = now;
-            } else if (now - pounceStartTime >= holdTime.get().longValue()) {
-                mc.options.keyJump.setDown(false); // Отпускаем пробел
-                pounceState = PounceState.CRIT_SNAP; // Переходим в крит-снап
-                lastPounceTime = now;
+                pounceJumped = false;
             }
-            return; // Выходим, чтобы не сбить прыжок
         }
 
-        if (isFalling) {
-            // МЫ ПАДАЕМ (критовый удар). Мгновенно наводимся на игрока, ZKillaura бьет.
-            pounceState = PounceState.CRIT_SNAP;
-            faceTargetInstant(target);
-            setKeys(true, false, true, null); // Нажимаем W чтобы не терять инерцию в сторону игрока, Jump не трогаем!
-        } else {
-            // Мы на земле или не падаем.
-            if (dist <= attackRangeSync.get()) {
-                pounceState = PounceState.BACKING_UP;
+        switch (pounceState) {
+            case IDLE:
+            case BACKING_UP:
+                // Мы на земле, ждем прыжка. Отворачиваемся спиной и жмем S.
                 faceAway(target);
-                setKeys(false, true, false, null); // Жмем S. Jump НЕ ТРОГАЕМ, чтобы можно было прыгать вручную!
-            } else {
-                // Больше 3 блоков
-                if (mc.player.onGround() && dist <= pounceRange.get() && (now - lastPounceTime) > pounceCooldown.get()) {
-                    pounceState = PounceState.POUNCING;
-                    pounceJumped = false;
-                } else {
-                    pounceState = PounceState.APPROACHING;
-                    faceAway(target);
-                    setKeys(false, true, false, null); // Жмем S. Jump НЕ ТРОГАЕМ!
+                setKeys(false, true, false, null); // S нажат, Прыжок не трогаем
+                break;
+                
+            case POUNCING:
+                // Совершаем прыжок
+                if (!pounceJumped) {
+                    faceTargetInstant(target);
+                    setKeys(true, false, true, true); // W + Ctrl + Space
+                    pounceJumped = true;
+                    pounceStartTime = now;
+                } else if (now - pounceStartTime >= holdTime.get().longValue()) {
+                    mc.options.keyJump.setDown(false); // Отпускаем пробел
+                    pounceState = PounceState.AIRBORNE; // Переходим в полет
+                    lastPounceTime = now;
                 }
-            }
+                break;
+                
+            case AIRBORNE:
+                // Мы в воздухе. Смотрим на игрока, чтобы ZKillaura зафиксировала крит.
+                faceTargetInstant(target);
+                setKeys(true, false, true, null); // W + Ctrl, прыжок не трогаем
+                
+                // Если приземлились — возвращаемся в исходное состояние
+                if (mc.player.onGround()) {
+                    pounceState = PounceState.BACKING_UP;
+                }
+                break;
         }
     }
 
@@ -295,7 +302,9 @@ public class ZAimbot extends Module {
         mc.options.keyUp.setDown(w);
         mc.options.keyDown.setDown(s);
         mc.options.keySprint.setDown(sprint);
-        if (jump != null) mc.options.keyJump.setDown(jump);
+        if (jump != null) {
+            mc.options.keyJump.setDown(jump);
+        }
         keysManaged = true;
     }
 
