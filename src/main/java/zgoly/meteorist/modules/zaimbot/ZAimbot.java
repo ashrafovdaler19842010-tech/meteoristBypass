@@ -43,6 +43,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import zgoly.meteorist.Meteorist;
+import zgoly.meteorist.modules.ZAutoSprint;
 import zgoly.meteorist.utils.config.MeteoristConfigManager;
 
 import java.util.ArrayList;
@@ -90,13 +91,13 @@ public class ZAimbot extends Module {
     private final Setting<Boolean> instantPitch = sgAim.add(new BoolSetting.Builder().name("instant-pitch").defaultValue(false).build());
     private final Setting<Boolean> syncYawWithCooldown = sgAim.add(new BoolSetting.Builder().name("sync-yaw-with-cooldown").defaultValue(false).visible(() -> !instantYaw.get()).build());
     private final Setting<Boolean> syncPitchWithCooldown = sgAim.add(new BoolSetting.Builder().name("sync-pitch-with-cooldown").defaultValue(false).visible(() -> !instantPitch.get()).build());
-    private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder().name("speed-yaw").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantYaw.get()).build());
-    private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder().name("speed-pitch").min(0).defaultValue(1).sliderRange(0.1, 10).visible(() -> !instantPitch.get()).build());
+    private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder().name("speed-yaw").min(0.1).defaultValue(10.0).sliderMax(180.0).visible(() -> !instantYaw.get()).build());
+    private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder().name("speed-pitch").min(0.1).defaultValue(10.0).sliderMax(180.0).visible(() -> !instantPitch.get()).build());
 
-    public enum CameraMode { SnapBackstab, HvH360 }
+    public enum CameraMode { SnapBackstab, HvH360, Mix }
     private final Setting<CameraMode> cameraMode = sgSnap.add(new EnumSetting.Builder<CameraMode>()
             .name("camera-mode")
-            .description("Выбери режим: SnapBackstab или HvH 360.")
+            .description("Режим работы: Snap, HvH 360 или Mix.")
             .defaultValue(CameraMode.SnapBackstab)
             .build()
     );
@@ -109,21 +110,24 @@ public class ZAimbot extends Module {
             .build()
     );
 
-    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа на игрока. 180 = мгновенно.").defaultValue(180.0).min(1.0).sliderMax(180.0).build());
-    private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").description("Скорость отворота спиной.").defaultValue(180.0).min(1.0).sliderMax(180.0).build());
-    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Радиус, в котором бот будет взаимодействовать с игроком.").defaultValue(12.0).min(3.0).sliderMax(12.0).build());
+    private final Setting<Boolean> autoJump = sgSnap.add(new BoolSetting.Builder()
+            .name("auto-jump").description("Автоматически прыгать для критов.").defaultValue(false).build()
+    );
+    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа. 180 = мгновенно.").defaultValue(180.0).min(0.1).sliderMax(180.0).build());
+    private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").description("Скорость отворота спиной.").defaultValue(180.0).min(0.1).sliderMax(180.0).build());
+    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Радиус взаимодействия.").defaultValue(12.0).min(3.0).sliderMax(12.0).build());
 
     // --- HvH 360 Settings ---
-    private final Setting<Double> hvhSpinSpeed = sgHvH.add(new DoubleSetting.Builder().name("spin-speed").description("Скорость вращения камеры 360.").defaultValue(180.0).min(10.0).sliderMax(360.0).build());
-    private final Setting<Double> hvhLookRange = sgHvH.add(new DoubleSetting.Builder().name("look-range").description("На каком расстоянии смотреть прямо на игрока (не крутиться).").defaultValue(3.0).min(1.0).sliderMax(5.0).build());
+    private final Setting<Double> hvhSpinSpeed = sgHvH.add(new DoubleSetting.Builder().name("spin-speed").description("Скорость вращения 360.").defaultValue(180.0).min(10.0).sliderMax(360.0).build());
+    private final Setting<Double> hvhLookRange = sgHvH.add(new DoubleSetting.Builder().name("look-range").description("Дистанция смотреть прямо на игрока.").defaultValue(3.0).min(1.0).sliderMax(5.0).build());
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
     
     private LivingEntity stickyTarget = null;
-    private boolean keysManaged = false;
+    private CameraMode currentMixMode = CameraMode.SnapBackstab;
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with snap and HvH360.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot with snap, HvH360 and Mix.");
     }
 
     @Override
@@ -195,18 +199,26 @@ public class ZAimbot extends Module {
     @Override
     public void onActivate() {
         stickyTarget = null;
+        currentMixMode = CameraMode.SnapBackstab;
         releaseManagedKeys();
     }
 
     @Override
     public void onDeactivate() {
+        // Жесткий сброс всех клавиш
+        mc.options.keyUp.setDown(false);
+        mc.options.keyDown.setDown(false);
+        mc.options.keyLeft.setDown(false);
+        mc.options.keyRight.setDown(false);
+        mc.options.keySprint.setDown(false);
+        mc.options.keyJump.setDown(false);
         stickyTarget = null;
-        releaseManagedKeys();
     }
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
+        if (ZAutoSprint.wTapActive) return; // Не трогаем клавиши во время W-Tap
 
         if (stickyTarget == null || !stickyTarget.isAlive() || mc.player.distanceTo(stickyTarget) > pounceRange.get()) {
             Entity found = TargetUtils.get(this::entityCheck, priority.get());
@@ -214,21 +226,31 @@ public class ZAimbot extends Module {
         }
 
         if (stickyTarget == null) {
-            if (keysManaged) releaseManagedKeys();
+            releaseManagedKeys();
             return;
         }
 
-        if (cameraMode.get() == CameraMode.SnapBackstab) {
+        CameraMode mode = cameraMode.get();
+        if (mode == CameraMode.Mix) mode = currentMixMode;
+
+        if (mode == CameraMode.SnapBackstab) {
             handleSnapBackstab(stickyTarget);
         } else {
             handleHvH360(stickyTarget);
         }
     }
 
+    // Вызывается из Killaura при ударе для переключения режима Mix
+    public void onAttack() {
+        if (cameraMode.get() == CameraMode.Mix) {
+            currentMixMode = (currentMixMode == CameraMode.SnapBackstab) ? CameraMode.HvH360 : CameraMode.SnapBackstab;
+        }
+    }
+
     @EventHandler
     private void onRender3D(Render3DEvent event) {
         if (mc.player == null || mc.level == null) return;
-        if (cameraMode.get() == CameraMode.SnapBackstab || cameraMode.get() == CameraMode.HvH360) return;
+        if (cameraMode.get() == CameraMode.SnapBackstab || cameraMode.get() == CameraMode.HvH360 || cameraMode.get() == CameraMode.Mix) return;
 
         Entity target = TargetUtils.get(this::entityCheck, priority.get());
         Item heldItem = mc.player.getMainHandItem().getItem();
@@ -237,53 +259,45 @@ public class ZAimbot extends Module {
         aim(mc.player, target);
     }
 
-    // --- SNAP BACKSTAB LOGIC (Обычный) ---
     private void handleSnapBackstab(LivingEntity target) {
         boolean isJumping = mc.options.keyJump.isDown();
-        // ИСПРАВЛЕНО: isOnClimbable() заменен на onClimbable()
         boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.onClimbable();
 
+        if (autoJump.get() && mc.player.onGround()) {
+            mc.options.keyJump.setDown(true);
+            isJumping = true;
+        }
+
         if (isJumping || isFalling) {
-            // Прыгаем/падаем: снап на игрока
-            faceTargetInstant(target);
-            setKeys(true, false, true, null); // W + Sprint (чтобы инерция работала и ты не падал вниз)
+            faceTarget(target, snapSpeed.get().floatValue());
+            setKeys(true, false, true, null);
         } else {
-            // На земле: смотрим спиной, зажимаем S
             faceAway(target);
-            setKeys(false, true, false, null); // S
+            setKeys(false, true, false, null);
         }
     }
 
-    // --- HVH 360 LOGIC (Крутилка) ---
     private void handleHvH360(LivingEntity target) {
         double dist = mc.player.distanceTo(target);
         boolean isJumping = mc.options.keyJump.isDown();
-        // ИСПРАВЛЕНО: isOnClimbable() заменен на onClimbable()
         boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.onClimbable();
 
-        // 1. Вращение камеры
+        if (autoJump.get() && mc.player.onGround()) {
+            mc.options.keyJump.setDown(true);
+            isJumping = true;
+        }
+
         if (isJumping || isFalling) {
-            // На крите — резкий незаметный снап для удара
-            faceTargetInstant(target);
+            faceTarget(target, snapSpeed.get().floatValue());
         } else {
-            // Крутимся как ебанутый
             float spin = hvhSpinSpeed.get().floatValue();
             mc.player.setYRot(mc.player.getYRot() + spin);
-            // Немного меняем Y для эффекта спина
             mc.player.setXRot(mc.player.getXRot() + (float) ((Math.random() - 0.5) * 20));
         }
 
-        // 2. Движение (WASD)
         if (dist > hvhLookRange.get() || isJumping || isFalling) {
-            // Если далеко или прыгаем — просто идем на игрока (снап уже был или будет)
-            mc.options.keyUp.setDown(true);
-            mc.options.keySprint.setDown(true); // Спринт при W
-            mc.options.keyDown.setDown(false);
-            mc.options.keyLeft.setDown(false);
-            mc.options.keyRight.setDown(false);
+            setKeys(true, false, true, null);
         } else {
-            // Если близко (меньше 3 блоков) — корректируем движение по направлению к игроку относительно нашего текущего угла
-            // ИСПРАВЛЕНО: приведение к float добавлено
             float targetYaw = (float) Rotations.getYaw(target.position());
             float yawDiff = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
 
@@ -293,79 +307,65 @@ public class ZAimbot extends Module {
             mc.options.keyRight.setDown(false);
             mc.options.keySprint.setDown(false);
 
-            // Если игрок впереди по направлению камеры (W)
-            if (yawDiff >= -45 && yawDiff <= 45) {
-                mc.options.keyUp.setDown(true);
-                mc.options.keySprint.setDown(true); // Спринт вперед
-            } 
-            // Если игрок справа (D)
-            else if (yawDiff > 45 && yawDiff <= 135) {
-                mc.options.keyRight.setDown(true);
-            } 
-            // Если игрок слева (A)
-            else if (yawDiff < -45 && yawDiff >= -135) {
-                mc.options.keyLeft.setDown(true);
-            } 
-            // Если игрок сзади (S)
-            else {
-                mc.options.keyDown.setDown(true);
-            }
+            if (yawDiff >= -45 && yawDiff <= 45) setKeys(true, false, true, null);
+            else if (yawDiff > 45 && yawDiff <= 135) mc.options.keyRight.setDown(true);
+            else if (yawDiff < -45 && yawDiff >= -135) mc.options.keyLeft.setDown(true);
+            else mc.options.keyDown.setDown(true);
         }
     }
 
     private void faceAway(Entity target) {
         Vec3 aimPoint = target.position();
         float targetYaw = (float) Rotations.getYaw(aimPoint) + 180.0f;
-        
         float diff = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
         float step = Math.min(Math.abs(diff), returnSpeed.get().floatValue());
         mc.player.setYRot(mc.player.getYRot() + Math.signum(diff) * step);
-        
         float pitchDiff = 0 - mc.player.getXRot();
         float pitchStep = Math.min(Math.abs(pitchDiff), returnSpeed.get().floatValue());
         mc.player.setXRot(mc.player.getXRot() + Math.signum(pitchDiff) * pitchStep);
     }
 
-    private void faceTargetInstant(Entity target) {
+    private void faceTarget(Entity target, float speed) {
         Vec3 aimPoint = getAimPoint(target);
-        float yaw = (float) Rotations.getYaw(aimPoint);
-        float pitch = (float) Rotations.getPitch(aimPoint);
+        float targetYaw = (float) Rotations.getYaw(aimPoint);
+        float targetPitch = (float) Rotations.getPitch(aimPoint);
 
-        if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) mc.player.setYRot(yaw);
-        if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) mc.player.setXRot(pitch);
+        if (speed >= 180.0f) {
+            mc.player.setYRot(targetYaw);
+            mc.player.setXRot(targetPitch);
+        } else {
+            float diffYaw = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
+            float diffPitch = Mth.wrapDegrees(targetPitch - mc.player.getXRot());
+
+            float stepYaw = Math.min(Math.abs(diffYaw), speed);
+            float stepPitch = Math.min(Math.abs(diffPitch), speed);
+
+            mc.player.setYRot(mc.player.getYRot() + Math.signum(diffYaw) * stepYaw);
+            mc.player.setXRot(mc.player.getXRot() + Math.signum(diffPitch) * stepPitch);
+        }
     }
 
     private Vec3 getAimPoint(Entity target) {
         AABB box = target.getBoundingBox();
-        
         if (aimPointMode.get() == AimPointMode.RandomBody) {
-            double x = box.minX + Math.random() * (box.maxX - box.minX);
-            double y = box.minY + Math.random() * (box.maxY - box.minY);
-            double z = box.minZ + Math.random() * (box.maxZ - box.minZ);
-            return new Vec3(x, y, z);
-        } 
-        else if (aimPointMode.get() == AimPointMode.NearestRay) {
-            Vec3 eye = mc.player.getEyePosition();
-            Vec3 look = mc.player.getViewVector(1.0f);
-            Vec3 hit = rayAABB(eye, look, box);
-            if (hit != null) {
-                return hit.add((Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15);
-            }
+            return new Vec3(box.minX + Math.random() * (box.maxX - box.minX),
+                            box.minY + Math.random() * (box.maxY - box.minY),
+                            box.minZ + Math.random() * (box.maxZ - box.minZ));
+        } else if (aimPointMode.get() == AimPointMode.NearestRay) {
+            Vec3 hit = rayAABB(mc.player.getEyePosition(), mc.player.getViewVector(1.0f), box);
+            if (hit != null) return hit.add((Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15);
             return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
         }
-        
         return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
     }
 
     private Vec3 rayAABB(Vec3 origin, Vec3 dir, AABB box) {
-        double tMin = 0.0D;
-        double tMax = Double.MAX_VALUE;
+        double tMin = 0.0D, tMax = Double.MAX_VALUE;
         for (int i = 0; i < 3; i++) {
             double originC = i == 0 ? origin.x : (i == 1 ? origin.y : origin.z);
             double dirC = i == 0 ? dir.x : (i == 1 ? dir.y : dir.z);
             double minC = i == 0 ? box.minX : (i == 1 ? box.minY : box.minZ);
             double maxC = i == 0 ? box.maxX : (i == 1 ? box.maxY : box.maxZ);
-
             if (Math.abs(dirC) < 1.0E-7D) {
                 if (originC < minC || originC > maxC) return null;
             } else {
@@ -385,70 +385,35 @@ public class ZAimbot extends Module {
     private void setKeys(boolean w, boolean s, boolean sprint, Boolean jump) {
         mc.options.keyUp.setDown(w);
         mc.options.keyDown.setDown(s);
-        if (sprint) mc.options.keySprint.setDown(true);
-        if (jump != null) {
-            mc.options.keyJump.setDown(jump);
-        }
-        keysManaged = true;
+        mc.options.keySprint.setDown(sprint); // ИСПРАВЛЕНО
+        if (jump != null) mc.options.keyJump.setDown(jump);
     }
 
     private void releaseManagedKeys() {
-        if (keysManaged) {
-            mc.options.keyUp.setDown(false);
-            mc.options.keyDown.setDown(false);
-            mc.options.keySprint.setDown(false);
-            mc.options.keyJump.setDown(false);
-            keysManaged = false;
-        }
+        mc.options.keyUp.setDown(false);
+        mc.options.keyDown.setDown(false);
+        mc.options.keyLeft.setDown(false);
+        mc.options.keyRight.setDown(false);
+        mc.options.keySprint.setDown(false);
+        mc.options.keyJump.setDown(false);
     }
 
     private void aim(LivingEntity player, Entity target) {
         Vec3 predictedPos = target.position().add(target.getDeltaMovement().scale(targetMovementPrediction.get()));
         float yaw = (float) Rotations.getYaw(predictedPos);
-        float pitch;
-        Item usedItem = mc.player.getMainHandItem().getItem();
-        AimTrajectory matchingTrajectory = trajectories.stream().filter(t -> t.items.get().contains(usedItem)).findFirst().orElse(null);
-        if (matchingTrajectory != null) {
-            pitch = calculatePitchWithTrajectory(player, target, matchingTrajectory);
-        } else {
-            pitch = (float) Rotations.getPitch(target, bodyTarget.get());
-        }
+        float pitch = (float) Rotations.getPitch(target, bodyTarget.get());
 
         float yawDifference = Mth.wrapDegrees(yaw - player.getYRot());
         float pitchDifference = Mth.wrapDegrees(pitch - player.getXRot());
 
-        if (instantYaw.get()) {
-            if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) player.setYRot(yaw);
-        } else if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) {
-            float cooldownProgress = syncYawWithCooldown.get() ? mc.player.getAttackStrengthScale(0) : 1;
-            float yawSpeedFactor = speedYaw.get().floatValue() / 10;
-            player.setYRot(player.getYRot() + yawDifference * cooldownProgress * yawSpeedFactor);
+        if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) {
+            float factor = (speedYaw.get().floatValue() / 180.0f);
+            player.setYRot(player.getYRot() + yawDifference * factor);
         }
-
-        if (instantPitch.get()) {
-            if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) player.setXRot(pitch);
-        } else if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) {
-            float cooldownProgress = syncPitchWithCooldown.get() ? mc.player.getAttackStrengthScale(0) : 1;
-            float pitchSpeedFactor = speedPitch.get().floatValue() / 10;
-            player.setXRot(player.getXRot() + pitchDifference * cooldownProgress * pitchSpeedFactor);
+        if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) {
+            float factor = (speedPitch.get().floatValue() / 180.0f);
+            player.setXRot(player.getXRot() + pitchDifference * factor);
         }
-    }
-
-    private float calculatePitchWithTrajectory(LivingEntity player, Entity target, AimTrajectory traj) {
-        Vec3 playerEye = player.getEyePosition();
-        Vec3 targetPos = target.position().add(0, target.getBoundingBox().getYsize() / 2, 0);
-        double dx = targetPos.x - playerEye.x;
-        double dy = targetPos.y - playerEye.y;
-        double dz = targetPos.z - playerEye.z;
-        double hDist = Math.sqrt(dx * dx + dz * dz);
-        if (hDist == 0) return 0;
-        double g = 0.006 * traj.gravity.get();
-        double v = traj.velocityScale.get();
-        double vSq = v * v;
-        double sqrtPart = vSq * vSq - g * (g * hDist * hDist + 2 * dy * vSq);
-        if (sqrtPart < 0) return (float) Rotations.getPitch(target, bodyTarget.get());
-        double pitchRad = Math.atan((vSq - Math.sqrt(sqrtPart)) / (g * hDist));
-        return (float) -Math.toDegrees(pitchRad);
     }
 
     private boolean entityCheck(Entity entity) {
