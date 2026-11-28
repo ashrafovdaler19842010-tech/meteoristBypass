@@ -1,6 +1,7 @@
 package zgoly.meteorist.modules.zaimbot;
 
 import meteordevelopment.meteorclient.events.entity.player.AttackEntityEvent;
+import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.gui.GuiTheme;
@@ -22,6 +23,7 @@ import meteordevelopment.orbit.EventHandler;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.AgeableMob;
 import net.minecraft.world.entity.Entity;
@@ -60,6 +62,7 @@ public class ZAimbot extends Module {
     private final SettingGroup sgAim = settings.createGroup("Aim");
     private final SettingGroup sgSnap = settings.createGroup("Snap Backstab");
     private final SettingGroup sgHvH = settings.createGroup("HvH 360");
+    private final SettingGroup sgLogger = settings.createGroup("Anti-Cheat Logger");
 
     // --- Filter ---
     private final Setting<Set<EntityType<?>>> entities = sgFilter.add(new EntityTypeListSetting.Builder()
@@ -95,10 +98,11 @@ public class ZAimbot extends Module {
     private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder().name("speed-yaw").min(0.1).defaultValue(10.0).sliderMax(180.0).visible(() -> !instantYaw.get()).build());
     private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder().name("speed-pitch").min(0.1).defaultValue(10.0).sliderMax(180.0).visible(() -> !instantPitch.get()).build());
 
-    public enum CameraMode { SnapBackstab, HvH360, Mix }
+    // Добавлен режим None
+    public enum CameraMode { None, SnapBackstab, HvH360, Mix }
     private final Setting<CameraMode> cameraMode = sgSnap.add(new EnumSetting.Builder<CameraMode>()
             .name("camera-mode")
-            .description("Режим: Snap, HvH 360 или Mix.")
+            .description("Режим: None (легит), Snap, HvH 360 или Mix.")
             .defaultValue(CameraMode.SnapBackstab)
             .build()
     );
@@ -121,6 +125,12 @@ public class ZAimbot extends Module {
     // --- HvH 360 Settings ---
     private final Setting<Double> hvhSpinSpeed = sgHvH.add(new DoubleSetting.Builder().name("spin-speed").description("Скорость вращения 360.").defaultValue(180.0).min(10.0).sliderMax(360.0).build());
     private final Setting<Double> hvhLookRange = sgHvH.add(new DoubleSetting.Builder().name("look-range").description("Дистанция смотреть прямо на игрока.").defaultValue(3.0).min(1.0).sliderMax(5.0).build());
+
+    // --- Anti-Cheat Logger ---
+    private final Setting<Boolean> logAntiCheat = sgLogger.add(new BoolSetting.Builder()
+            .name("log-anticheat").description("Записывать откаты (setbacks) от сервера для анализа.").defaultValue(false).build()
+    );
+    private final List<String> logs = new ArrayList<>();
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
     
@@ -168,6 +178,32 @@ public class ZAimbot extends Module {
 
     private void fillWidget(GuiTheme theme, WVerticalList list) {
         list.clear();
+        
+        // --- Кнопки логгера ---
+        list.add(theme.label("Anti-Cheat Logger Controls"));
+        WContainer logControls = list.add(theme.horizontalList()).expandX().widget();
+        
+        WButton copyBtn = logControls.add(theme.button("Copy Logs")).expandX().widget();
+        copyBtn.action = () -> {
+            if (!logs.isEmpty()) {
+                mc.keyboardHandler.setClipboard(String.join("\n", logs));
+                logs.add("[SYSTEM] Logs copied to clipboard.");
+            }
+        };
+        
+        WButton clearBtn = logControls.add(theme.button("Clear Logs")).expandX().widget();
+        clearBtn.action = () -> logs.clear();
+        
+        list.add(theme.label("Current Logs (" + logs.size() + "):"));
+        WVerticalList logList = list.add(theme.verticalList()).expandX().widget();
+        int start = Math.max(0, logs.size() - 5); // Показываем последние 5
+        for (int i = start; i < logs.size(); i++) {
+            logList.add(theme.label(logs.get(i)));
+        }
+        
+        list.add(theme.horizontalSeparator()).expandX();
+
+        // --- Стандартные настройки траекторий ---
         for (AimTrajectory trajectory : trajectories) {
             list.add(theme.settings(trajectory.settings)).expandX();
             WContainer controls = list.add(theme.horizontalList()).widget();
@@ -206,7 +242,6 @@ public class ZAimbot extends Module {
 
     @Override
     public void onDeactivate() {
-        // Полный сброс всех клавиш при выключении
         mc.options.keyUp.setDown(false);
         mc.options.keyDown.setDown(false);
         mc.options.keyLeft.setDown(false);
@@ -216,7 +251,19 @@ public class ZAimbot extends Module {
         stickyTarget = null;
     }
 
-    // Ловим удар для переключения режима Mix
+    // Ловим пакеты сервера (Setback / Телепортация)
+    @EventHandler
+    private void onPacketReceive(PacketEvent.Receive event) {
+        if (!logAntiCheat.get() || mc.player == null) return;
+        
+        if (event.packet instanceof ClientboundPlayerPositionPacket packet) {
+            String log = String.format("[SETBACK] Server Rot: %.1f / %.1f | Client Rot: %.1f / %.1f", 
+                    packet.getYRot(), packet.getXRot(), mc.player.getYRot(), mc.player.getXRot());
+            logs.add(log);
+            if (logs.size() > 100) logs.remove(0); // Лимит, чтобы не забить память
+        }
+    }
+
     @EventHandler
     private void onAttackEntity(AttackEntityEvent event) {
         if (cameraMode.get() == CameraMode.Mix) {
@@ -227,8 +274,6 @@ public class ZAimbot extends Module {
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
-        
-        // Если идет сброс спринта, Аимбот не трогает клавиши
         if (ZAutoSprint.wTapActive) return; 
 
         if (stickyTarget == null || !stickyTarget.isAlive() || mc.player.distanceTo(stickyTarget) > pounceRange.get()) {
@@ -243,25 +288,25 @@ public class ZAimbot extends Module {
 
         CameraMode mode = cameraMode.get();
         if (mode == CameraMode.Mix) mode = currentMixMode;
+        if (mode == CameraMode.None) return; // Режим Легит - ничего не трогаем
 
-        // Авто-прыжок
         if (autoJump.get() && mc.player.onGround() && !mc.player.isInWater()) {
             mc.options.keyJump.setDown(true);
         }
 
+        // Если прыгаем или падаем - жестко фиксируем голову на игроке (скорость 180 = мгновенно)
+        boolean isJumpingOrFalling = mc.options.keyJump.isDown() || mc.player.fallDistance > 0.0F || !mc.player.onGround();
+        
         if (mode == CameraMode.SnapBackstab) {
-            handleSnapBackstab(stickyTarget);
+            handleSnapBackstab(stickyTarget, isJumpingOrFalling);
         } else {
-            handleHvH360(stickyTarget);
+            handleHvH360(stickyTarget, isJumpingOrFalling);
         }
     }
 
-    private void handleSnapBackstab(LivingEntity target) {
-        boolean isJumping = mc.options.keyJump.isDown();
-        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.onClimbable();
-
-        if (isJumping || isFalling) {
-            faceTarget(target, snapSpeed.get().floatValue());
+    private void handleSnapBackstab(LivingEntity target, boolean isJumpingOrFalling) {
+        if (isJumpingOrFalling) {
+            faceTarget(target, 180.0f); // Мгновенный снап
             setKeys(true, false, true, null);
         } else {
             faceAway(target);
@@ -269,20 +314,18 @@ public class ZAimbot extends Module {
         }
     }
 
-    private void handleHvH360(LivingEntity target) {
+    private void handleHvH360(LivingEntity target, boolean isJumpingOrFalling) {
         double dist = mc.player.distanceTo(target);
-        boolean isJumping = mc.options.keyJump.isDown();
-        boolean isFalling = mc.player.fallDistance > 0.0F && !mc.player.onGround() && !mc.player.isInWater() && !mc.player.onClimbable();
 
-        if (isJumping || isFalling) {
-            faceTarget(target, snapSpeed.get().floatValue());
+        if (isJumpingOrFalling) {
+            faceTarget(target, 180.0f); // Мгновенный снап
         } else {
             float spin = hvhSpinSpeed.get().floatValue();
             mc.player.setYRot(mc.player.getYRot() + spin);
             mc.player.setXRot(mc.player.getXRot() + (float) ((Math.random() - 0.5) * 20));
         }
 
-        if (dist > hvhLookRange.get() || isJumping || isFalling) {
+        if (dist > hvhLookRange.get() || isJumpingOrFalling) {
             setKeys(true, false, true, null);
         } else {
             float targetYaw = (float) Rotations.getYaw(target.position());
@@ -312,18 +355,15 @@ public class ZAimbot extends Module {
         mc.player.setXRot(mc.player.getXRot() + Math.signum(pitchDiff) * pitchStep);
     }
 
-    // Рабочая скорость поворота (ползунки)
     private void faceTarget(Entity target, float speed) {
         Vec3 aimPoint = getAimPoint(target);
         float targetYaw = (float) Rotations.getYaw(aimPoint);
         float targetPitch = (float) Rotations.getPitch(aimPoint);
 
         if (speed >= 180.0f) {
-            // Мгновенный снап
             mc.player.setYRot(targetYaw);
             mc.player.setXRot(targetPitch);
         } else {
-            // Плавный поворот
             float diffYaw = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
             float diffPitch = Mth.wrapDegrees(targetPitch - mc.player.getXRot());
 
@@ -375,7 +415,7 @@ public class ZAimbot extends Module {
     private void setKeys(boolean w, boolean s, boolean sprint, Boolean jump) {
         mc.options.keyUp.setDown(w);
         mc.options.keyDown.setDown(s);
-        mc.options.keySprint.setDown(sprint); // Теперь спринт корректно выключается
+        mc.options.keySprint.setDown(sprint);
         if (jump != null) mc.options.keyJump.setDown(jump);
     }
 
