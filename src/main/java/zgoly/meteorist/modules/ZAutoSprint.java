@@ -21,7 +21,8 @@ public class ZAutoSprint extends Module {
             .name("w-tap-ticks").description("Задержка сброса спринта (в тиках).").defaultValue(1).sliderRange(1, 3).visible(wTap::get).build()
     );
 
-    public static boolean wTapActive = false; // Флаг для аимбота
+    // Этот флаг видит ZAimbot, чтобы не перебивать клавиши во время сброса
+    public static boolean wTapActive = false; 
     private int wTapTimer = 0;
     private LivingEntity pendingWTapTarget = null;
 
@@ -38,7 +39,7 @@ public class ZAutoSprint extends Module {
 
     @Override
     public void onDeactivate() {
-        // Сброс при выключении
+        // Принудительный сброс при выключении
         mc.options.keySprint.setDown(false);
         if (mc.player != null) mc.player.setSprinting(false);
         wTapActive = false;
@@ -50,7 +51,7 @@ public class ZAutoSprint extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.level == null) return;
 
-        // Обработка W-Tap
+        // Логика W-Tap
         if (wTapTimer > 0) {
             wTapTimer--;
             if (wTapTimer == 0 && wTapActive) {
@@ -81,7 +82,7 @@ public class ZAutoSprint extends Module {
         if (wTap.get() && mc.player.isSprinting()) {
             mc.options.keySprint.setDown(false);
             mc.player.setSprinting(false);
-            wTapActive = true;
+            wTapActive = true; // Блокируем управление клавишами в ZAimbot
             wTapTimer = wTapTicks.get();
             pendingWTapTarget = target;
         } else {
