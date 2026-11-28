@@ -1,6 +1,5 @@
 package zgoly.meteorist.modules.zaimbot;
 
-import meteordevelopment.meteorclient.events.entity.player.AttackEntityEvent;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -60,7 +59,6 @@ import static zgoly.meteorist.utils.MeteoristUtils.calculateFov;
 public class ZAimbot extends Module {
     private final SettingGroup sgFilter = settings.createGroup("Filter");
     private final SettingGroup sgAim = settings.createGroup("Aim");
-    private final SettingGroup sgSnap = settings.createGroup("Snap Backstab");
     private final SettingGroup sgHvH = settings.createGroup("HvH 360");
     private final SettingGroup sgLogger = settings.createGroup("Anti-Cheat Logger");
 
@@ -87,7 +85,7 @@ public class ZAimbot extends Module {
     private final Setting<List<Item>> itemBlacklist = sgFilter.add(new ItemListSetting.Builder().name("item-blacklist").defaultValue(Items.COBWEB).visible(() -> itemFilteringMode.get() == OperationMode.Blacklist).build());
     private final Setting<List<Item>> itemWhitelist = sgFilter.add(new ItemListSetting.Builder().name("item-whitelist").defaultValue(Items.BOW, Items.CROSSBOW, Items.TRIDENT).visible(() -> itemFilteringMode.get() == OperationMode.Whitelist).build());
 
-    // --- Aim ---
+    // --- Aim (Легит настройки) ---
     public final Setting<Double> targetMovementPrediction = sgAim.add(new DoubleSetting.Builder().name("target-movement-prediction").min(0).sliderMax(20).defaultValue(0).build());
     private final Setting<AimAxes> aimAxes = sgAim.add(new EnumSetting.Builder<AimAxes>().name("aim-axes").defaultValue(AimAxes.Both).build());
     private final Setting<Target> bodyTarget = sgAim.add(new EnumSetting.Builder<Target>().name("aim-target").defaultValue(Target.Head).build());
@@ -98,47 +96,41 @@ public class ZAimbot extends Module {
     private final Setting<Double> speedYaw = sgAim.add(new DoubleSetting.Builder().name("speed-yaw").min(0.1).defaultValue(10.0).sliderMax(180.0).visible(() -> !instantYaw.get()).build());
     private final Setting<Double> speedPitch = sgAim.add(new DoubleSetting.Builder().name("speed-pitch").min(0.1).defaultValue(10.0).sliderMax(180.0).visible(() -> !instantPitch.get()).build());
 
-    // Добавлен режим None
-    public enum CameraMode { None, SnapBackstab, HvH360, Mix }
-    private final Setting<CameraMode> cameraMode = sgSnap.add(new EnumSetting.Builder<CameraMode>()
+    public enum CameraMode { None, HvH360 }
+    private final Setting<CameraMode> cameraMode = sgHvH.add(new EnumSetting.Builder<CameraMode>()
             .name("camera-mode")
-            .description("Режим: None (легит), Snap, HvH 360 или Mix.")
-            .defaultValue(CameraMode.SnapBackstab)
+            .description("None - стандартный аим. HvH 360 - спин.")
+            .defaultValue(CameraMode.None)
             .build()
     );
 
     public enum AimPointMode { Center, RandomBody, NearestRay }
-    private final Setting<AimPointMode> aimPointMode = sgSnap.add(new EnumSetting.Builder<AimPointMode>()
+    private final Setting<AimPointMode> aimPointMode = sgHvH.add(new EnumSetting.Builder<AimPointMode>()
             .name("aim-point-mode")
-            .description("Куда целиться: Center, RandomBody, NearestRay.")
+            .description("Куда целиться (для HvH 360 при ударе).")
             .defaultValue(AimPointMode.RandomBody)
             .build()
     );
 
-    private final Setting<Boolean> autoJump = sgSnap.add(new BoolSetting.Builder()
+    private final Setting<Boolean> autoJump = sgHvH.add(new BoolSetting.Builder()
             .name("auto-jump").description("Автоматически прыгать для критов.").defaultValue(false).build()
     );
-    private final Setting<Double> snapSpeed = sgSnap.add(new DoubleSetting.Builder().name("snap-speed").description("Скорость снапа. 180 = мгновенно.").defaultValue(180.0).min(0.1).sliderMax(180.0).build());
-    private final Setting<Double> returnSpeed = sgSnap.add(new DoubleSetting.Builder().name("return-speed").description("Скорость отворота спиной.").defaultValue(180.0).min(0.1).sliderMax(180.0).build());
-    private final Setting<Double> pounceRange = sgSnap.add(new DoubleSetting.Builder().name("pounce-range").description("Радиус взаимодействия.").defaultValue(12.0).min(3.0).sliderMax(12.0).build());
-
-    // --- HvH 360 Settings ---
     private final Setting<Double> hvhSpinSpeed = sgHvH.add(new DoubleSetting.Builder().name("spin-speed").description("Скорость вращения 360.").defaultValue(180.0).min(10.0).sliderMax(360.0).build());
     private final Setting<Double> hvhLookRange = sgHvH.add(new DoubleSetting.Builder().name("look-range").description("Дистанция смотреть прямо на игрока.").defaultValue(3.0).min(1.0).sliderMax(5.0).build());
 
     // --- Anti-Cheat Logger ---
     private final Setting<Boolean> logAntiCheat = sgLogger.add(new BoolSetting.Builder()
-            .name("log-anticheat").description("Записывать откаты (setbacks) от сервера для анализа.").defaultValue(false).build()
+            .name("log-anticheat").description("Записывать откаты сервера и твои лучи.").defaultValue(false).build()
     );
     private final List<String> logs = new ArrayList<>();
+    private float lastYaw = 0;
+    private float lastPitch = 0;
 
     private final List<AimTrajectory> trajectories = new ArrayList<>();
-    
     private LivingEntity stickyTarget = null;
-    private CameraMode currentMixMode = CameraMode.SnapBackstab;
 
     public ZAimbot() {
-        super(Meteorist.CATEGORY, "z-aimbot", "Smart aimbot.");
+        super(Meteorist.CATEGORY, "z-aimbot", "Aimbot with HvH 360 and Logger.");
     }
 
     @Override
@@ -179,7 +171,6 @@ public class ZAimbot extends Module {
     private void fillWidget(GuiTheme theme, WVerticalList list) {
         list.clear();
         
-        // --- Кнопки логгера ---
         list.add(theme.label("Anti-Cheat Logger Controls"));
         WContainer logControls = list.add(theme.horizontalList()).expandX().widget();
         
@@ -187,23 +178,22 @@ public class ZAimbot extends Module {
         copyBtn.action = () -> {
             if (!logs.isEmpty()) {
                 mc.keyboardHandler.setClipboard(String.join("\n", logs));
-                logs.add("[SYSTEM] Logs copied to clipboard.");
+                logs.add("[SYSTEM] Logs copied.");
             }
         };
         
         WButton clearBtn = logControls.add(theme.button("Clear Logs")).expandX().widget();
         clearBtn.action = () -> logs.clear();
         
-        list.add(theme.label("Current Logs (" + logs.size() + "):"));
+        list.add(theme.label("Logs (" + logs.size() + "):"));
         WVerticalList logList = list.add(theme.verticalList()).expandX().widget();
-        int start = Math.max(0, logs.size() - 5); // Показываем последние 5
+        int start = Math.max(0, logs.size() - 5); 
         for (int i = start; i < logs.size(); i++) {
             logList.add(theme.label(logs.get(i)));
         }
         
         list.add(theme.horizontalSeparator()).expandX();
 
-        // --- Стандартные настройки траекторий ---
         for (AimTrajectory trajectory : trajectories) {
             list.add(theme.settings(trajectory.settings)).expandX();
             WContainer controls = list.add(theme.horizontalList()).widget();
@@ -236,39 +226,28 @@ public class ZAimbot extends Module {
     @Override
     public void onActivate() {
         stickyTarget = null;
-        currentMixMode = CameraMode.SnapBackstab;
         releaseManagedKeys();
+        lastYaw = mc.player != null ? mc.player.getYRot() : 0;
+        lastPitch = mc.player != null ? mc.player.getXRot() : 0;
     }
 
     @Override
     public void onDeactivate() {
-        mc.options.keyUp.setDown(false);
-        mc.options.keyDown.setDown(false);
-        mc.options.keyLeft.setDown(false);
-        mc.options.keyRight.setDown(false);
-        mc.options.keySprint.setDown(false);
-        mc.options.keyJump.setDown(false);
+        releaseManagedKeys();
         stickyTarget = null;
     }
 
-    // Ловим пакеты сервера (Setback / Телепортация)
     @EventHandler
     private void onPacketReceive(PacketEvent.Receive event) {
         if (!logAntiCheat.get() || mc.player == null) return;
         
         if (event.packet instanceof ClientboundPlayerPositionPacket) {
-            // Записываем ТОЛЬКО клиентские углы, так как именно они вызвали откат
-            String log = String.format("[SETBACK] Client sent Rot: %.1f / %.1f", 
-                    mc.player.getYRot(), mc.player.getXRot());
+            float deltaYaw = Mth.wrapDegrees(mc.player.getYRot() - lastYaw);
+            float deltaPitch = Mth.wrapDegrees(mc.player.getXRot() - lastPitch);
+            String log = String.format("[SETBACK] Rot: %.1f/%.1f | Delta: %.1f/%.1f | Mode: %s", 
+                    mc.player.getYRot(), mc.player.getXRot(), deltaYaw, deltaPitch, cameraMode.get().name());
             logs.add(log);
-            if (logs.size() > 100) logs.remove(0); // Лимит, чтобы не забить память
-        }
-    }
-
-    @EventHandler
-    private void onAttackEntity(AttackEntityEvent event) {
-        if (cameraMode.get() == CameraMode.Mix) {
-            currentMixMode = (currentMixMode == CameraMode.SnapBackstab) ? CameraMode.HvH360 : CameraMode.SnapBackstab;
+            if (logs.size() > 100) logs.remove(0);
         }
     }
 
@@ -277,7 +256,7 @@ public class ZAimbot extends Module {
         if (mc.player == null || mc.level == null) return;
         if (ZAutoSprint.wTapActive) return; 
 
-        if (stickyTarget == null || !stickyTarget.isAlive() || mc.player.distanceTo(stickyTarget) > pounceRange.get()) {
+        if (stickyTarget == null || !stickyTarget.isAlive() || mc.player.distanceTo(stickyTarget) > range.get()) {
             Entity found = TargetUtils.get(this::entityCheck, priority.get());
             stickyTarget = (found instanceof LivingEntity living) ? living : null;
         }
@@ -287,48 +266,59 @@ public class ZAimbot extends Module {
             return;
         }
 
-        CameraMode mode = cameraMode.get();
-        if (mode == CameraMode.Mix) mode = currentMixMode;
-        if (mode == CameraMode.None) return; // Режим Легит - ничего не трогаем
+        if (logAntiCheat.get()) {
+            float deltaYaw = Mth.wrapDegrees(mc.player.getYRot() - lastYaw);
+            float deltaPitch = Mth.wrapDegrees(mc.player.getXRot() - lastPitch);
+            if (Math.abs(deltaYaw) > 30 || Math.abs(deltaPitch) > 30) {
+                logs.add(String.format("[TICK] Fast Rot: %.1f/%.1f | Delta: %.1f/%.1f", 
+                    mc.player.getYRot(), mc.player.getXRot(), deltaYaw, deltaPitch));
+                if (logs.size() > 100) logs.remove(0);
+            }
+            lastYaw = mc.player.getYRot();
+            lastPitch = mc.player.getXRot();
+        }
 
+        if (cameraMode.get() == CameraMode.None) {
+            // В режиме None не трогаем повороты здесь, это делает onRender3D
+        } else if (cameraMode.get() == CameraMode.HvH360) {
+            handleHvH360(stickyTarget);
+        }
+    }
+
+    @EventHandler
+    private void onRender3D(Render3DEvent event) {
+        if (mc.player == null || mc.level == null) return;
+        if (cameraMode.get() == CameraMode.HvH360) return; // HvH управляется в onTick
+        
+        // Режим None - оригинальная логика аима
+        Entity target = TargetUtils.get(this::entityCheck, priority.get());
+        Item heldItem = mc.player.getMainHandItem().getItem();
+        if (itemFilteringMode.get() == OperationMode.Blacklist ? itemBlacklist.get().contains(heldItem) : !itemWhitelist.get().contains(heldItem)) return;
+        if (target == null) return;
+        aim(mc.player, target);
+    }
+
+    private void handleHvH360(LivingEntity target) {
+        double dist = mc.player.distanceTo(target);
+        
         if (autoJump.get() && mc.player.onGround() && !mc.player.isInWater()) {
             mc.options.keyJump.setDown(true);
         }
 
-        // Если прыгаем или падаем - жестко фиксируем голову на игроке (скорость 180 = мгновенно)
+        // Логика спина
         boolean isJumpingOrFalling = mc.options.keyJump.isDown() || mc.player.fallDistance > 0.0F || !mc.player.onGround();
         
-        if (mode == CameraMode.SnapBackstab) {
-            handleSnapBackstab(stickyTarget, isJumpingOrFalling);
-        } else {
-            handleHvH360(stickyTarget, isJumpingOrFalling);
-        }
-    }
-
-    private void handleSnapBackstab(LivingEntity target, boolean isJumpingOrFalling) {
-        if (isJumpingOrFalling) {
-            faceTarget(target, 180.0f); // Мгновенный снап
-            setKeys(true, false, true, null);
-        } else {
-            faceAway(target);
-            setKeys(false, true, false, null);
-        }
-    }
-
-    private void handleHvH360(LivingEntity target, boolean isJumpingOrFalling) {
-        double dist = mc.player.distanceTo(target);
-
-        if (isJumpingOrFalling) {
-            faceTarget(target, 180.0f); // Мгновенный снап
-        } else {
+        // Если мы в воздухе и близко - просто спим и бьем
+        if (dist <= hvhLookRange.get() || isJumpingOrFalling) {
+            // Мы не наводимся на игрока (оставляем спин), чтобы Grim не палил резкие повороты в воздухе
             float spin = hvhSpinSpeed.get().floatValue();
             mc.player.setYRot(mc.player.getYRot() + spin);
             mc.player.setXRot(mc.player.getXRot() + (float) ((Math.random() - 0.5) * 20));
-        }
-
-        if (dist > hvhLookRange.get() || isJumpingOrFalling) {
+            
+            // Двигаемся на игрока
             setKeys(true, false, true, null);
         } else {
+            // Если далеко - двигаемся стрейфами
             float targetYaw = (float) Rotations.getYaw(target.position());
             float yawDiff = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
 
@@ -345,72 +335,54 @@ public class ZAimbot extends Module {
         }
     }
 
-    private void faceAway(Entity target) {
-        Vec3 aimPoint = target.position();
-        float targetYaw = (float) Rotations.getYaw(aimPoint) + 180.0f;
-        float diff = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
-        float step = Math.min(Math.abs(diff), returnSpeed.get().floatValue());
-        mc.player.setYRot(mc.player.getYRot() + Math.signum(diff) * step);
-        float pitchDiff = 0 - mc.player.getXRot();
-        float pitchStep = Math.min(Math.abs(pitchDiff), returnSpeed.get().floatValue());
-        mc.player.setXRot(mc.player.getXRot() + Math.signum(pitchDiff) * pitchStep);
-    }
-
-    private void faceTarget(Entity target, float speed) {
-        Vec3 aimPoint = getAimPoint(target);
-        float targetYaw = (float) Rotations.getYaw(aimPoint);
-        float targetPitch = (float) Rotations.getPitch(aimPoint);
-
-        if (speed >= 180.0f) {
-            mc.player.setYRot(targetYaw);
-            mc.player.setXRot(targetPitch);
+    // Оригинальная логика аима из Meteorist
+    private void aim(LivingEntity player, Entity target) {
+        Vec3 predictedPos = target.position().add(target.getDeltaMovement().scale(targetMovementPrediction.get()));
+        float yaw = (float) Rotations.getYaw(predictedPos);
+        float pitch;
+        Item usedItem = mc.player.getMainHandItem().getItem();
+        AimTrajectory matchingTrajectory = trajectories.stream().filter(t -> t.items.get().contains(usedItem)).findFirst().orElse(null);
+        if (matchingTrajectory != null) {
+            pitch = calculatePitchWithTrajectory(player, target, matchingTrajectory);
         } else {
-            float diffYaw = Mth.wrapDegrees(targetYaw - mc.player.getYRot());
-            float diffPitch = Mth.wrapDegrees(targetPitch - mc.player.getXRot());
+            pitch = (float) Rotations.getPitch(target, bodyTarget.get());
+        }
 
-            float stepYaw = Math.min(Math.abs(diffYaw), speed);
-            float stepPitch = Math.min(Math.abs(diffPitch), speed);
+        float yawDifference = Mth.wrapDegrees(yaw - player.getYRot());
+        float pitchDifference = Mth.wrapDegrees(pitch - player.getXRot());
 
-            mc.player.setYRot(mc.player.getYRot() + Math.signum(diffYaw) * stepYaw);
-            mc.player.setXRot(mc.player.getXRot() + Math.signum(diffPitch) * stepPitch);
+        if (instantYaw.get()) {
+            if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) player.setYRot(yaw);
+        } else if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyYaw) {
+            float cooldownProgress = syncYawWithCooldown.get() ? mc.player.getAttackStrengthScale(0) : 1;
+            float yawSpeedFactor = speedYaw.get().floatValue() / 10;
+            player.setYRot(player.getYRot() + yawDifference * cooldownProgress * yawSpeedFactor);
+        }
+
+        if (instantPitch.get()) {
+            if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) player.setXRot(pitch);
+        } else if (aimAxes.get() == AimAxes.Both || aimAxes.get() == AimAxes.OnlyPitch) {
+            float cooldownProgress = syncPitchWithCooldown.get() ? mc.player.getAttackStrengthScale(0) : 1;
+            float pitchSpeedFactor = speedPitch.get().floatValue() / 10;
+            player.setXRot(player.getXRot() + pitchDifference * cooldownProgress * pitchSpeedFactor);
         }
     }
 
-    private Vec3 getAimPoint(Entity target) {
-        AABB box = target.getBoundingBox();
-        if (aimPointMode.get() == AimPointMode.RandomBody) {
-            return new Vec3(box.minX + Math.random() * (box.maxX - box.minX),
-                            box.minY + Math.random() * (box.maxY - box.minY),
-                            box.minZ + Math.random() * (box.maxZ - box.minZ));
-        } else if (aimPointMode.get() == AimPointMode.NearestRay) {
-            Vec3 hit = rayAABB(mc.player.getEyePosition(), mc.player.getViewVector(1.0f), box);
-            if (hit != null) return hit.add((Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15, (Math.random() - 0.5) * 0.15);
-            return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
-        }
-        return new Vec3(target.getX(), target.getY() + target.getBbHeight() * 0.75, target.getZ());
-    }
-
-    private Vec3 rayAABB(Vec3 origin, Vec3 dir, AABB box) {
-        double tMin = 0.0D, tMax = Double.MAX_VALUE;
-        for (int i = 0; i < 3; i++) {
-            double originC = i == 0 ? origin.x : (i == 1 ? origin.y : origin.z);
-            double dirC = i == 0 ? dir.x : (i == 1 ? dir.y : dir.z);
-            double minC = i == 0 ? box.minX : (i == 1 ? box.minY : box.minZ);
-            double maxC = i == 0 ? box.maxX : (i == 1 ? box.maxY : box.maxZ);
-            if (Math.abs(dirC) < 1.0E-7D) {
-                if (originC < minC || originC > maxC) return null;
-            } else {
-                double t1 = (minC - originC) / dirC;
-                double t2 = (maxC - originC) / dirC;
-                if (t1 > t2) { double temp = t1; t1 = t2; t2 = temp; }
-                tMin = Math.max(tMin, t1);
-                tMax = Math.min(tMax, t2);
-                if (tMin > tMax) return null;
-            }
-        }
-        if (tMin < 0) tMin = tMax;
-        if (tMin < 0) return null;
-        return origin.add(dir.scale(tMin));
+    private float calculatePitchWithTrajectory(LivingEntity player, Entity target, AimTrajectory traj) {
+        Vec3 playerEye = player.getEyePosition();
+        Vec3 targetPos = target.position().add(0, target.getBoundingBox().getYsize() / 2, 0);
+        double dx = targetPos.x - playerEye.x;
+        double dy = targetPos.y - playerEye.y;
+        double dz = targetPos.z - playerEye.z;
+        double hDist = Math.sqrt(dx * dx + dz * dz);
+        if (hDist == 0) return 0;
+        double g = 0.006 * traj.gravity.get();
+        double v = traj.velocityScale.get();
+        double vSq = v * v;
+        double sqrtPart = vSq * vSq - g * (g * hDist * hDist + 2 * dy * vSq);
+        if (sqrtPart < 0) return (float) Rotations.getPitch(target, bodyTarget.get());
+        double pitchRad = Math.atan((vSq - Math.sqrt(sqrtPart)) / (g * hDist));
+        return (float) -Math.toDegrees(pitchRad);
     }
 
     private void setKeys(boolean w, boolean s, boolean sprint, Boolean jump) {
