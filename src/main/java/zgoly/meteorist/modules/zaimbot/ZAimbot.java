@@ -256,9 +256,10 @@ public class ZAimbot extends Module {
     private void onPacketReceive(PacketEvent.Receive event) {
         if (!logAntiCheat.get() || mc.player == null) return;
         
-        if (event.packet instanceof ClientboundPlayerPositionPacket packet) {
-            String log = String.format("[SETBACK] Server Rot: %.1f / %.1f | Client Rot: %.1f / %.1f", 
-                    packet.getYRot(), packet.getXRot(), mc.player.getYRot(), mc.player.getXRot());
+        if (event.packet instanceof ClientboundPlayerPositionPacket) {
+            // Записываем ТОЛЬКО клиентские углы, так как именно они вызвали откат
+            String log = String.format("[SETBACK] Client sent Rot: %.1f / %.1f", 
+                    mc.player.getYRot(), mc.player.getXRot());
             logs.add(log);
             if (logs.size() > 100) logs.remove(0); // Лимит, чтобы не забить память
         }
